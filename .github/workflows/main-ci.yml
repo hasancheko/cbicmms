@@ -1,0 +1,394 @@
+name: Test, Push to DockerHub & Deploy to Koyeb
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to push the deployed-backend / deployed-frontend tags
+
+env:
+  GIT_SHA: ${{ github.sha }}
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: detect-changes-${{ github.ref }}
+      cancel-in-progress: true
+    outputs:
+      backend: ${{ steps.out.outputs.backend }}
+      frontend: ${{ steps.out.outputs.frontend }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Is tag push
+        id: ref
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "IS_TAG=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "IS_TAG=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch deploy-marker tags
+        run: git fetch --tags --force
+
+      - name: Determine backend changes since last deploy
+        id: backend-diff
+        run: |
+          if git rev-parse deployed-backend >/dev/null 2>&1; then
+            if git diff --quiet deployed-backend..HEAD -- api/; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine frontend changes since last deploy
+        id: frontend-diff
+        run: |
+          if git rev-parse deployed-frontend >/dev/null 2>&1; then
+            if git diff --quiet deployed-frontend..HEAD -- frontend/; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute effective targets
+        id: out
+        run: |
+          if [[ "${{ steps.ref.outputs.IS_TAG }}" == "true" ]]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=${{ steps.backend-diff.outputs.changed }}" >> "$GITHUB_OUTPUT"
+            echo "frontend=${{ steps.frontend-diff.outputs.changed }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: detect-changes
+    timeout-minutes: 25
+    if: ${{ vars.SKIP_TESTS != 'true' && needs.detect-changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: backend-test-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      SPRING_PROFILES_ACTIVE: ${{ vars.SPRING_PROFILES_ACTIVE }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Run tests
+        run: mvn test -DargLine="--add-opens java.base/java.lang=ALL-UNNAMED"
+        working-directory: ./api
+
+  selfhost-smoke-test:
+    needs: detect-changes
+    timeout-minutes: 35
+    if: >-
+      ${{
+        vars.SKIP_TESTS != 'true' &&
+        (needs.detect-changes.outputs.backend == 'true' ||
+         needs.detect-changes.outputs.frontend == 'true')
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: selfhost-smoke-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build backend image from source
+        run: docker build -t intelloop/atlas-cmms-backend:latest ./api
+
+      - name: Build frontend image from source
+        run: docker build -t intelloop/atlas-cmms-frontend:latest ./frontend
+
+      - name: Prepare self-host directory with bare .env
+        run: |
+          mkdir -p /tmp/selfhost/logo /tmp/selfhost/config
+          cp .env.example /tmp/selfhost/.env
+          cp docker-compose.yml /tmp/selfhost/docker-compose.yml
+          cp nginx.conf /tmp/selfhost/nginx.conf
+
+      - name: Start self-host stack
+        run: docker compose up -d --wait
+        working-directory: /tmp/selfhost
+
+      - name: Wait for backend health-check via nginx
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health-check || true)
+            if [ "$code" = "200" ]; then
+              echo "backend health-check OK (attempt $i)"
+              exit 0
+            fi
+            echo "waiting for backend... attempt $i (http $code)"
+            sleep 10
+          done
+          echo "Backend health-check did not succeed in time" >&2
+          exit 1
+
+      - name: Check /health-check on api container
+        run: |
+          NET=$(docker network ls --filter "name=atlas-cmms" --format "{{.Name}}" | head -n1)
+          docker run --rm --network "$NET" curlimages/curl:8.8.0 -fsS http://api:8080/health-check
+          echo "backend /health-check OK"
+
+      - name: Check frontend is served
+        run: |
+          body=$(curl -fsS http://localhost:3000/)
+          echo "$body" | grep -q 'Atlas CMMS'
+          echo "$body" | grep -q '<div id="root">'
+          echo "frontend OK"
+
+      - name: Show stack status on failure
+        if: failure()
+        run: |
+          docker compose ps || true
+          docker compose logs || true
+        working-directory: /tmp/selfhost
+
+      - name: Clean up stack
+        if: always()
+        run: docker compose down -v
+        working-directory: /tmp/selfhost
+
+  push-backend-docker:
+    needs: [detect-changes, test]
+    if: >-
+      ${{
+        needs.detect-changes.outputs.backend == 'true' &&
+        (needs.test.result == 'success' || needs.test.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: backend-docker-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      BACKEND_IMAGE: intelloop/atlas-cmms-backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine Docker tag
+        id: docker-tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="latest"
+          fi
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            SENTRY_RELEASE=${{ env.GIT_SHA }}
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ steps.docker-tag.outputs.TAG }}
+          cache-from: type=registry,ref=${{ env.BACKEND_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.BACKEND_IMAGE }}:buildcache,mode=max
+
+  deploy-koyeb:
+    needs: [detect-changes, test]
+    if: >-
+      ${{
+        needs.detect-changes.outputs.backend == 'true' &&
+        (needs.test.result == 'success' || needs.test.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: backend-koyeb-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install and configure the Koyeb CLI
+        uses: koyeb-community/koyeb-actions@v2
+        with:
+          api_token: "${{ secrets.KOYEB_API_TOKEN }}"
+
+      - name: Deploy to Koyeb
+        uses: koyeb/action-git-deploy@v1
+        with:
+          app-name: soviet-jennette
+          service-name: atlas-api
+          service-instance-type: medium
+          service-env: "PORT=8080,SENTRY_RELEASE=${{ env.GIT_SHA }}"
+          service-ports: "8080:http"
+          service-routes: "/:8080"
+          service-checks: "8080:http:/health-check"
+          service-regions: 'par'
+          git-workdir: ./api
+          git-builder: docker
+
+      - name: Mark backend as deployed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f deployed-backend
+          git push origin deployed-backend --force
+
+  push-frontend-docker:
+    needs: [ detect-changes, test ]
+    if: >-
+        ${{
+          always() &&
+          needs.detect-changes.result == 'success' &&
+          needs.detect-changes.outputs.frontend == 'true' &&
+          (needs.test.result == 'success' || needs.test.result == 'skipped')
+        }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: frontend-docker-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      FRONTEND_IMAGE: intelloop/atlas-cmms-frontend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine Docker tag
+        id: docker-tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="latest"
+          fi
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:${{ steps.docker-tag.outputs.TAG }}
+          cache-from: type=registry,ref=${{ env.FRONTEND_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.FRONTEND_IMAGE }}:buildcache,mode=max
+
+  deploy-netlify:
+    needs: [ detect-changes, test ]
+    if: >-
+      ${{
+        always() &&
+        needs.detect-changes.result == 'success' &&
+        needs.detect-changes.outputs.frontend == 'true' &&
+        (needs.test.result == 'success' || needs.test.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: frontend-netlify-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+          cache-dependency-path: ./frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ./frontend
+
+      - name: Build project
+        run: npm run build
+        working-directory: ./frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          REACT_APP_API_URL: ${{ secrets.REACT_APP_API_URL }}
+          REACT_APP_CLOUD_VERSION: ${{ secrets.REACT_APP_CLOUD_VERSION }}
+          REACT_APP_DEMO_LINK: ${{ secrets.REACT_APP_DEMO_LINK }}
+          REACT_APP_GOOGLE_KEY: ${{ secrets.REACT_APP_GOOGLE_KEY }}
+          REACT_APP_GOOGLE_TRACKING_ID: ${{ secrets.REACT_APP_GOOGLE_TRACKING_ID }}
+          REACT_APP_HOME_URL: ${{ secrets.REACT_APP_HOME_URL }}
+          REACT_APP_INTERCOM_ID: ${{ secrets.REACT_APP_INTERCOM_ID }}
+          REACT_APP_INVITATION_VIA_EMAIL: ${{ secrets.REACT_APP_INVITATION_VIA_EMAIL }}
+          REACT_APP_MUI_X_LICENSE: ${{ secrets.REACT_APP_MUI_X_LICENSE }}
+          REACT_APP_PADDLE_ENVIRONMENT: ${{ secrets.REACT_APP_PADDLE_ENVIRONMENT }}
+          REACT_APP_PADDLE_SECRET_TOKEN: ${{ secrets.REACT_APP_PADDLE_SECRET_TOKEN }}
+          REACT_APP_RECAPTCHA_SITE_KEY: ${{ secrets.REACT_APP_RECAPTCHA_SITE_KEY }}
+          REACT_APP_SENTRY_DSN: ${{ secrets.REACT_APP_SENTRY_DSN }}
+          REACT_APP_SENTRY_ENVIRONMENT: ${{ vars.SENTRY_ENVIRONMENT }}
+          REACT_APP_SENTRY_RELEASE: ${{ env.GIT_SHA }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES: ${{ secrets.SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES }}
+
+      - name: Deploy to Netlify
+        uses: nwtgck/actions-netlify@v2
+        with:
+          publish-dir: ./frontend/build
+          production-branch: main
+          deploy-message: ${{ github.event.head_commit.message }}
+          enable-pull-request-comment: true
+          enable-commit-comment: true
+          overwrites-pull-request-comment: true
+          production-deploy: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          NODE_OPTIONS: --max_old_space_size=4096
+        timeout-minutes: 20
+
+      - name: Mark frontend as deployed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f deployed-frontend
+          git push origin deployed-frontend --force

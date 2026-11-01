@@ -1,0 +1,424 @@
+package com.grash.utils;
+
+
+import com.grash.exception.CustomException;
+import com.grash.model.*;
+import com.grash.model.User;
+import com.grash.model.enums.Language;
+import com.grash.model.enums.PermissionEntity;
+import com.grash.model.enums.RoleCode;
+import com.grash.model.enums.RoleType;
+import com.grash.model.abstracts.WorkOrderBase;
+import com.grash.dto.imports.WorkOrderImportDTO;
+import com.grash.model.enums.Priority;
+import com.grash.model.WorkOrderCategory;
+import com.grash.service.LocationService;
+import com.grash.service.TeamService;
+import com.grash.service.UserService;
+import com.grash.service.AssetService;
+import com.grash.service.WorkOrderCategoryService;
+import com.grash.security.CustomUserDetail;
+import jakarta.annotation.Nullable;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.context.MessageSource;
+import org.springframework.util.StringUtils;
+import org.springframework.data.domain.Page;
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+
+import jakarta.mail.internet.AddressException;
+import jakarta.mail.internet.InternetAddress;
+
+import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+public class Helper {
+
+    private static final Random RANDOM = new SecureRandom();
+
+    public String generateString() {
+        return UUID.randomUUID().toString();
+    }
+
+    public static String generateUniqueFilePath(String fileName, String folder) {
+        String cleanName = StringUtils.cleanPath(fileName != null && !fileName.isBlank() ? fileName : "unnamed");
+        String sanitizedOriginalName = cleanName.replaceAll("[^a-zA-Z0-9._-]", "_");
+        String safeFileName = UUID.randomUUID() + "_" + sanitizedOriginalName;
+        String sanitizedFolder = folder == null ? "" : folder.replaceAll("[^a-zA-Z0-9._-]", "_").replaceAll("^/+|/+$"
+                , "");
+        return sanitizedFolder.isEmpty() ? safeFileName : sanitizedFolder + "/" + safeFileName;
+    }
+
+    public static String generateStringId() {
+        StringBuilder returnValue = new StringBuilder(8);
+        for (int i = 0; i < 8; i++) {
+            String ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            returnValue.append(ALPHABET.charAt(RANDOM.nextInt(ALPHABET.length())));
+        }
+        return returnValue.toString();
+    }
+
+    public static String getFormattedDate(Object date, com.grash.model.enums.DateFormat dateFormat, String timeZone) {
+        if (date == null) return null;
+        String pattern = dateFormat == com.grash.model.enums.DateFormat.MMDDYY ? "MM/dd/yy" : "dd/MM/yy";
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern(pattern)
+                .withZone(ZoneId.of(timeZone));
+        if (date instanceof Date) return formatter.format(((Date) date).toInstant());
+        if (date instanceof Instant) return formatter.format((Instant) date);
+        if (date instanceof LocalDateTime) return formatter.format(((LocalDateTime) date).atZone(ZoneId.of(timeZone)));
+        return date.toString();
+    }
+
+    /**
+     * Get a diff between two dates
+     *
+     * @param date1    the oldest date
+     * @param date2    the newest date
+     * @param timeUnit the unit in which you want the diff
+     * @return the diff value, in the provided unit
+     */
+    public static long getDateDiff(Date date1, Date date2, TimeUnit timeUnit) {
+        long diffInMillies = date2.getTime() - date1.getTime();
+        return timeUnit.convert(diffInMillies, TimeUnit.MILLISECONDS);
+    }
+
+    public static boolean isValidEmailAddress(String email) {
+        boolean result = true;
+        try {
+            InternetAddress emailAddr = new InternetAddress(email);
+            emailAddr.validate();
+        } catch (AddressException ex) {
+            result = false;
+        }
+        return result;
+    }
+
+    public static Date incrementDays(Date date, int days) {
+        Calendar c = Calendar.getInstance();
+        c.setTime(date);
+        c.add(Calendar.DATE, days);
+        return c.getTime();
+    }
+
+    public static Date localDateToDate(LocalDate localDate) {
+        return Date.from(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant());
+    }
+
+    public static Date localDateTimeToDate(LocalDateTime localDateTime) {
+        return Date.from(localDateTime.atZone(ZoneId.systemDefault()).toInstant());
+    }
+
+    public static LocalDate dateToLocalDate(Date date) {
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+    }
+
+    public static Date addSeconds(Date date, int seconds) {
+        return new Date(date.getTime() + seconds * 1000);
+    }
+
+    public static Locale getLocale(User user) {
+        Language userLanguage = user.getLanguage();
+        return userLanguage == null ? getLocale(user.getCompany()) : getLocale(userLanguage);
+    }
+
+    public static Locale getLocale(Company company) {
+        Language language = company.getCompanySettings().getGeneralPreferences().getLanguage();
+        return getLocale(language);
+    }
+
+    private static Locale getLocale(Language language) {
+        return switch (language) {
+            case FR -> Locale.FRANCE;
+            case TR -> new Locale("tr", "TR");
+            case ES -> new Locale("es", "ES");
+            case PT_BR -> new Locale("pt", "BR");
+            case PT -> new Locale("pt", "BR");
+            case PL -> new Locale("pl", "PL");
+            case DE -> new Locale("de", "DE");
+            case AR -> new Locale("ar", "AR");
+            case IT -> new Locale("it", "IT");
+            case SV -> new Locale("sv", "SE");
+            case RU -> new Locale("ru", "RU");
+            case HU -> new Locale("hu", "HU");
+            case NL -> new Locale("nl", "NL");
+            case ZH_CN -> new Locale("zh", "CN");
+            case ZH -> new Locale("zh", "CN");
+            case BA -> new Locale("ba", "BA");
+            case JA -> new Locale("ja", "JP");
+            default -> Locale.getDefault();
+        };
+    }
+
+    public static boolean isRtl(Company company) {
+        Language language = company.getCompanySettings().getGeneralPreferences().getLanguage();
+        return language == Language.AR;
+    }
+
+    public static Date getDateFromJsString(String string) {
+        DateFormat jsfmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+        try {
+            return jsfmt.parse(string);
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    public static Date getDateFromExcelDate(Double excelDate) {
+        if (excelDate == null) {
+            return null;
+        }
+        try {
+            //https://stackoverflow.com/questions/66985321/date-is-appearing-in-number-format-while-upload-import-excel-sheet-in-angular
+            return new Date(Math.round((excelDate - 25569) * 24 * 60 * 60 * 1000));
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    public static boolean isSameDay(Date date1, Date date2) {
+        SimpleDateFormat fmt = new SimpleDateFormat("yyyyMMdd");
+        return fmt.format(date1).equals(fmt.format(date2));
+    }
+
+    public static String enumerate(Collection<String> strings) {
+        StringBuilder stringBuilder = new StringBuilder();
+        int size = strings.size();
+        int index = 0;
+        for (String string : strings) {
+            stringBuilder.append(string);
+            if (index < size - 1) {
+                stringBuilder.append(",");
+            }
+            index++;
+        }
+        return stringBuilder.toString();
+    }
+
+    public static boolean getBooleanFromString(String string) {
+        List<String> trues = Arrays.asList("true", "Yes", "Oui", "Evet");
+        return trues.stream().anyMatch(value -> value.equalsIgnoreCase(string));
+    }
+
+    public static String getStringFromBoolean(boolean bool, MessageSource messageSource, Locale locale) {
+        return messageSource.getMessage(bool ? "Yes" : "No", null, locale);
+    }
+
+    public static boolean isNumeric(String str) {
+        try {
+            Double.parseDouble(str);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    public static List<Role> getDefaultRoles() {
+        List<PermissionEntity> allEntities = Arrays.asList(PermissionEntity.values());
+        return Arrays.asList(
+                Role.builder()
+                        .roleType(RoleType.ROLE_CLIENT)
+                        .code(RoleCode.ADMIN)
+                        .name("Administrator")
+                        .paid(true)
+                        .createPermissions(new HashSet<>(allEntities))
+                        .editOtherPermissions(new HashSet<>(allEntities))
+                        .deleteOtherPermissions(new HashSet<>(allEntities))
+                        .viewOtherPermissions(new HashSet<>(allEntities))
+                        .viewPermissions(new HashSet<>(allEntities))
+                        .build(),
+                Role.builder()
+                        .roleType(RoleType.ROLE_CLIENT)
+                        .code(RoleCode.LIMITED_ADMIN)
+                        .name("Limited Administrator")
+                        .paid(true)
+                        .createPermissions(new HashSet<>(allEntities.stream().filter(permissionEntity -> !Arrays.asList(PermissionEntity.PEOPLE_AND_TEAMS, PermissionEntity.REQUESTS).contains(permissionEntity)).collect(Collectors.toList())))
+                        .editOtherPermissions(new HashSet<>(allEntities.stream().filter(permissionEntity -> !permissionEntity.equals(PermissionEntity.PEOPLE_AND_TEAMS)).collect(Collectors.toList())))
+                        .viewOtherPermissions(new HashSet<>(allEntities))
+                        .viewPermissions(new HashSet<>(allEntities.stream().filter(permissionEntity -> permissionEntity != PermissionEntity.SETTINGS).collect(Collectors.toList())))
+                        .deleteOtherPermissions(new HashSet<>())
+                        .build(),
+                Role.builder()
+                        .roleType(RoleType.ROLE_CLIENT)
+                        .code(RoleCode.TECHNICIAN)
+                        .name("Technician")
+                        .paid(true)
+                        .createPermissions(new HashSet<>(Arrays.asList(PermissionEntity.WORK_ORDERS,
+                                PermissionEntity.ASSETS, PermissionEntity.LOCATIONS, PermissionEntity.FILES)))
+                        .editOtherPermissions(new HashSet<>())
+                        .deleteOtherPermissions(new HashSet<>())
+                        .viewOtherPermissions(new HashSet<>(Arrays.asList(PermissionEntity.WORK_ORDERS,
+                                PermissionEntity.PARTS_AND_MULTIPARTS, PermissionEntity.LOCATIONS,
+                                PermissionEntity.ASSETS)))
+                        .viewPermissions(new HashSet<>(Arrays.asList(PermissionEntity.WORK_ORDERS,
+                                PermissionEntity.PARTS_AND_MULTIPARTS,
+                                PermissionEntity.LOCATIONS, PermissionEntity.ASSETS, PermissionEntity.CATEGORIES,
+                                PermissionEntity.PREVENTIVE_MAINTENANCES, PermissionEntity.METERS
+                        )))
+                        .build(),
+                Role.builder()
+                        .roleType(RoleType.ROLE_CLIENT)
+                        .code(RoleCode.LIMITED_TECHNICIAN)
+                        .name("Limited Technician")
+                        .paid(true)
+                        .createPermissions(new HashSet<>(Arrays.asList(PermissionEntity.FILES)))
+                        .editOtherPermissions(new HashSet<>())
+                        .deleteOtherPermissions(new HashSet<>())
+                        .viewOtherPermissions(new HashSet<>(Arrays.asList(PermissionEntity.ASSETS,
+                                PermissionEntity.PARTS_AND_MULTIPARTS, PermissionEntity.LOCATIONS)))
+                        .viewPermissions(new HashSet<>(Arrays.asList(PermissionEntity.WORK_ORDERS,
+                                PermissionEntity.CATEGORIES, PermissionEntity.PARTS_AND_MULTIPARTS,
+                                PermissionEntity.LOCATIONS, PermissionEntity.ASSETS,
+                                PermissionEntity.PREVENTIVE_MAINTENANCES, PermissionEntity.METERS)))
+                        .build(),
+                Role.builder()
+                        .roleType(RoleType.ROLE_CLIENT)
+                        .code(RoleCode.VIEW_ONLY)
+                        .name("View Only")
+                        .paid(false)
+                        .createPermissions(new HashSet<>())
+                        .editOtherPermissions(new HashSet<>())
+                        .deleteOtherPermissions(new HashSet<>())
+                        .viewOtherPermissions(new HashSet<>(allEntities))
+                        .viewPermissions(new HashSet<>(allEntities.stream().filter(permissionEntity -> permissionEntity != PermissionEntity.SETTINGS).collect(Collectors.toList())))
+                        .build(),
+                Role.builder()
+                        .roleType(RoleType.ROLE_CLIENT)
+                        .code(RoleCode.REQUESTER)
+                        .name("Requester")
+                        .paid(false)
+                        .createPermissions(new HashSet<>(Arrays.asList(PermissionEntity.REQUESTS,
+                                PermissionEntity.FILES)))
+                        .editOtherPermissions(new HashSet<>())
+                        .deleteOtherPermissions(new HashSet<>())
+                        .viewOtherPermissions(new HashSet<>())
+                        .viewPermissions(new HashSet<>(Arrays.asList(PermissionEntity.REQUESTS,
+                                PermissionEntity.CATEGORIES)))
+                        .build()
+        );
+    }
+
+    public static boolean isLocalhost(String urlString) {
+        try {
+            URL url = new URL(urlString);
+            String host = url.getHost();
+
+            // Check for common localhost values
+            if ("localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host) || "::1".equals(host)) {
+                return true;
+            }
+
+            // Resolve hostname to IP address and check if it's a local address
+            InetAddress address = InetAddress.getByName(host);
+            return address.isLoopbackAddress();
+
+        } catch (MalformedURLException | UnknownHostException e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    public static void populateWorkOrderBaseFromImportDTO(
+            WorkOrderBase workOrderBase,
+            WorkOrderImportDTO dto,
+            Company company,
+            LocationService locationService,
+            TeamService teamService,
+            UserService userService,
+            AssetService assetService,
+            WorkOrderCategoryService workOrderCategoryService
+    ) {
+        Long companyId = company.getId();
+
+        workOrderBase.setTitle(dto.getTitle());
+        workOrderBase.setDescription(dto.getDescription());
+        workOrderBase.setPriority(Priority.getPriorityFromString(dto.getPriority()));
+        workOrderBase.setEstimatedDuration(dto.getEstimatedDuration());
+
+        if (dto.getCategory() != null && !dto.getCategory().isBlank()) {
+            WorkOrderCategory category = workOrderCategoryService.getOrCreate(dto.getCategory(),
+                    company.getCompanySettings());
+            workOrderBase.setCategory(category);
+        }
+
+        Optional<Location> optionalLocation = locationService.findByNameIgnoreCaseAndCompany(dto.getLocationName(),
+                companyId).stream().findFirst();
+        optionalLocation.ifPresent(workOrderBase::setLocation);
+
+        Optional<Team> optionalTeam = teamService.findByNameIgnoreCaseAndCompany(dto.getTeamName(), companyId);
+        optionalTeam.ifPresent(workOrderBase::setTeam);
+
+        Optional<User> optionalPrimaryUser = userService.findByEmailAndCompany(dto.getPrimaryUserEmail(), companyId);
+        optionalPrimaryUser.ifPresent(workOrderBase::setPrimaryUser);
+
+        List<User> assignedTo = new ArrayList<>();
+        dto.getAssignedToEmails().forEach(email -> {
+            Optional<User> optionalUser1 = userService.findByEmailAndCompany(email, companyId);
+            optionalUser1.ifPresent(assignedTo::add);
+        });
+        workOrderBase.setAssignedTo(assignedTo);
+
+        Optional<Asset> optionalAsset =
+                assetService.findByNameIgnoreCaseAndCompany(dto.getAssetName(), companyId).stream().findFirst();
+        optionalAsset.ifPresent(workOrderBase::setAsset);
+    }
+
+    public static void setCurrentUser(User user) {
+        CustomUserDetail customUserDetail =
+                CustomUserDetail.builder().user(user).build();
+        Authentication authentication = new UsernamePasswordAuthenticationToken(
+                customUserDetail,
+                null,
+                customUserDetail.getAuthorities()
+        );
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+    }
+
+    @Nullable
+    public static User getCurrentUser() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getPrincipal() instanceof CustomUserDetail) {
+            return ((CustomUserDetail) authentication.getPrincipal()).getUser();
+        }
+        return null;
+    }
+
+    public static String hashKey(String raw) throws NoSuchAlgorithmException {
+        // Use SHA-256
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));
+        return Base64.getEncoder().encodeToString(hash);
+    }
+
+    public static Long resolveCompanyId(User user, Long companyId) {
+        if (companyId == null || companyId.equals(user.getCompany().getId())) {
+            return user.getCompany().getId();
+        }
+        boolean hasAccess = user.getSuperAccountRelations().stream()
+                .anyMatch(rel -> rel.getChildUser().getCompany().getId().equals(companyId));
+        if (!hasAccess) {
+            throw new CustomException("Access denied to company", HttpStatus.FORBIDDEN);
+        }
+        return companyId;
+    }
+}

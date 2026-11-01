@@ -1,0 +1,158 @@
+package com.grash.configuration;
+
+import com.grash.security.*;
+import com.grash.service.LicenseService;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.ProviderManager;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.ldap.authentication.LdapAuthenticationProvider;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+import java.util.Optional;
+
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity(prePostEnabled = true)
+@RequiredArgsConstructor
+public class WebSecurityConfig {
+
+    private final JwtTokenProvider jwtTokenProvider;
+    private final OAuth2AuthenticationSuccessHandler oAuth2AuthenticationSuccessHandler;
+    private final OAuth2AuthenticationFailureHandler oAuth2AuthenticationFailureHandler;
+    private final LicenseService licenseService;
+    private final RateLimitFilter rateLimitFilter;
+    private final CustomUserDetailsService customUserDetailsService;
+    private final Optional<LdapAuthenticationProvider> ldapAuthenticationProvider;
+    @Value("${enable-sso}")
+    private boolean enableSso;
+    @Value("${ldap.enabled:false}")
+    private boolean ldapEnabled;
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http, ApiKeyAuthFilter apiKeyAuthFilter) throws Exception {
+
+        // Disable CSRF (cross site request forgery)
+        http.csrf(AbstractHttpConfigurer::disable);
+
+        // No session will be created or used by spring security
+        http.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+
+        // Entry points
+        http.authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/auth/signin").permitAll()
+                        .requestMatchers("/auth/signin-ldap").permitAll()
+                        .requestMatchers("/auth/signup").permitAll()
+                        .requestMatchers("/auth/refresh").permitAll()
+                        .requestMatchers("/auth/sso/**").permitAll()
+                        .requestMatchers("/auth/sendMail").permitAll()
+                        .requestMatchers("/auth/resetpwd/**").permitAll()
+                        .requestMatchers("/auth/delete-account-confirm").permitAll()
+                        .requestMatchers("/license/state").permitAll()
+                        .requestMatchers("/oauth2/**").permitAll()
+                        .requestMatchers("/login/oauth2/**").permitAll()
+                        .requestMatchers("/health-check").permitAll()
+                        .requestMatchers("/mail/send").permitAll()
+                        .requestMatchers("/instance-config").permitAll()
+                        .requestMatchers("/subscription-plans").permitAll()
+                        .requestMatchers("/files/download/tos", "/files/download/privacy-policy").permitAll()
+                        .requestMatchers("/ws/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/newsLetters").permitAll()
+                        .requestMatchers("/auth/activate-account**").permitAll()
+                        .requestMatchers("/demo/generate-account").permitAll()
+                        .requestMatchers("/webhooks/**").permitAll()
+                        .requestMatchers("/paddle/create-checkout-session").permitAll()
+                        .requestMatchers("/auth/reset-pwd-confirm**").permitAll()
+                        //request-portal
+                        .requestMatchers("/request-portals/public/{uuid}").permitAll()
+                        .requestMatchers("/requests/portal/{requestPortalUuid}").permitAll()
+                        .requestMatchers("/files/upload/request-portal/{uuid}").permitAll()
+                        .requestMatchers("/assets/public/mini/{uuid}").permitAll()
+                        .requestMatchers("/locations/public/mini/{uuid}").permitAll()
+//                .requestMatchers("/h2-console/**").permitAll()
+                        .requestMatchers("/swagger-ui/**").permitAll()
+                        .requestMatchers("/swagger-ui.html").permitAll()
+                        .requestMatchers("/api-docs.html").permitAll()
+                        .requestMatchers("/v3/api-docs/**").permitAll()
+                        // Disallow everything else..
+                        .anyRequest().authenticated()
+        );
+
+        // OAuth2 Configuration
+        if (enableSso && licenseService.isSSOEnabled()) {
+            http.oauth2Login(oauth2 -> oauth2
+                    .authorizationEndpoint(endpoint -> endpoint.baseUri("/oauth2/authorize"))
+                    .redirectionEndpoint(endpoint -> endpoint.baseUri("/oauth2/callback/*"))
+                    .successHandler(oAuth2AuthenticationSuccessHandler)
+                    .failureHandler(oAuth2AuthenticationFailureHandler)
+            );
+        }
+
+        // If a user try to access a resource without having enough permissions
+        http.exceptionHandling(exception -> exception
+                .authenticationEntryPoint((request, response, authException) ->
+                        response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized"))
+                .accessDeniedHandler((request, response, accessDeniedException) ->
+                        response.sendError(HttpServletResponse.SC_FORBIDDEN, "Forbidden"))
+        );
+
+        http.addFilterBefore(new JwtTokenFilter(jwtTokenProvider), UsernamePasswordAuthenticationFilter.class);
+        http.addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class);
+        http.addFilterBefore(rateLimitFilter, UsernamePasswordAuthenticationFilter.class);
+
+        http.headers(headers -> headers
+                .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
+                .contentTypeOptions(Customizer.withDefaults())
+        );
+
+        http.cors(cors -> {
+        }); // Using lambda for cors configuration
+
+        return http.build();
+    }
+
+    @Bean
+    public WebSecurityCustomizer webSecurityCustomizer() {
+        return (web) -> web.ignoring()
+                .requestMatchers("/com/grash/configuration/**")//
+                .requestMatchers("/images/**")
+                // Un-secure H2 Database (for testing purposes, H2 console shouldn\'t be unprotected in production)
+//                .requestMatchers("/h2-console/**")
+                ;
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder(12);
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager() {
+        DaoAuthenticationProvider daoProvider = new DaoAuthenticationProvider();
+        daoProvider.setUserDetailsService(customUserDetailsService);
+        daoProvider.setPasswordEncoder(passwordEncoder());
+
+        if (ldapEnabled && ldapAuthenticationProvider.isPresent()) {
+            return new ProviderManager(daoProvider, ldapAuthenticationProvider.get());
+        } else {
+            return new ProviderManager(daoProvider);
+        }
+    }
+
+}

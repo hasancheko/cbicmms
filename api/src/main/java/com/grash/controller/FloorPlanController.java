@@ -1,0 +1,116 @@
+package com.grash.controller;
+
+import com.grash.dto.FloorPlanPatchDTO;
+import com.grash.dto.FloorPlanShowDTO;
+import com.grash.dto.SuccessResponse;
+import com.grash.exception.CustomException;
+import com.grash.mapper.FloorPlanMapper;
+import com.grash.model.FloorPlan;
+import com.grash.model.Location;
+import com.grash.model.User;
+import com.grash.service.FloorPlanService;
+import com.grash.service.LocationService;
+import com.grash.service.UserService;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+
+import java.util.Collection;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+@RestController
+@RequestMapping("/floor-plans")
+@Tag(name = "Floor Plans", description = "Operations on floor plans")
+@RequiredArgsConstructor
+public class FloorPlanController {
+
+    private final FloorPlanService floorPlanService;
+    private final UserService userService;
+    private final LocationService locationService;
+    private final FloorPlanMapper floorPlanMapper;
+
+    @GetMapping("/{id}")
+    @PreAuthorize("permitAll()")
+    public FloorPlanShowDTO getById(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<FloorPlan> optionalFloorPlan = floorPlanService.findById(id);
+        if (optionalFloorPlan.isPresent()) {
+            FloorPlan savedFloorPlan = optionalFloorPlan.get();
+            checkAccessToFloorPlan(savedFloorPlan, user, true);
+            return floorPlanMapper.toShowDto(savedFloorPlan);
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    @GetMapping("/location/{id}")
+    @PreAuthorize("permitAll()")
+    public Collection<FloorPlanShowDTO> getByLocation(@PathVariable("id") Long id,
+                                                      HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<Location> optionalLocation = locationService.findById(id);
+        if (optionalLocation.isPresent()) {
+            Location location = optionalLocation.get();
+            checkAccessToLocation(location, user, true);
+            return floorPlanService.findByLocation(id).stream().map(floorPlanMapper::toShowDto).collect(Collectors.toList());
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    @PostMapping("")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    FloorPlanShowDTO create(@Parameter(description = "Floor plan data to create") @Valid @RequestBody FloorPlan floorPlanReq,
+                            HttpServletRequest req) {
+        User user = userService.whoami(req);
+        return floorPlanMapper.toShowDto(floorPlanService.create(floorPlanReq));
+    }
+
+    @PatchMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public FloorPlanShowDTO patch(@Parameter(description = "Floor plan fields to update") @Valid @RequestBody FloorPlanPatchDTO floorPlan, @Parameter(description = "Floor plan ID") @PathVariable("id") Long id,
+                                  HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<FloorPlan> optionalFloorPlan = floorPlanService.findById(id);
+
+        if (optionalFloorPlan.isPresent()) {
+            FloorPlan savedFloorPlan = optionalFloorPlan.get();
+            checkAccessToFloorPlan(savedFloorPlan, user, false);
+            return floorPlanMapper.toShowDto(floorPlanService.update(id, floorPlan));
+        } else throw new CustomException("FloorPlan not found", HttpStatus.NOT_FOUND);
+    }
+
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public ResponseEntity delete(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+
+        Optional<FloorPlan> optionalFloorPlan = floorPlanService.findById(id);
+        if (optionalFloorPlan.isPresent()) {
+            FloorPlan savedFloorPlan = optionalFloorPlan.get();
+            checkAccessToFloorPlan(savedFloorPlan, user, false);
+            floorPlanService.delete(id);
+            return new ResponseEntity(new SuccessResponse(true, "Deleted successfully"),
+                    HttpStatus.OK);
+        } else throw new CustomException("FloorPlan not found", HttpStatus.NOT_FOUND);
+    }
+
+    private void checkAccessToFloorPlan(FloorPlan floorPlan, User user, boolean view) {
+        checkAccessToLocation(floorPlan.getLocation(), user, view);
+    }
+
+    private void checkAccessToLocation(Location location, User user, boolean view) {
+        if (!location.getCompany().getId().equals(user.getCompany().getId()) || (view ?
+                !location.canBeViewedBy(user) : !location.canBeEditedBy(user))) {
+            throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+        }
+    }
+
+}
+
+

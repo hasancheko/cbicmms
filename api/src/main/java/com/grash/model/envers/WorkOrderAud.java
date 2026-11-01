@@ -1,0 +1,246 @@
+package com.grash.model.envers;
+
+import com.grash.model.*;
+import com.grash.model.enums.Priority;
+import com.grash.model.enums.Status;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.springframework.context.MessageSource;
+
+import jakarta.persistence.*;
+
+import java.io.Serializable;
+import java.util.Date;
+import java.util.Locale;
+
+@Entity
+@Data
+@Table(name = "work_order_aud")
+@NoArgsConstructor
+public class WorkOrderAud implements Serializable {
+
+    @EmbeddedId
+    private WorkOrderAudId workOrderAudId;
+
+    @Column(name = "revtype") //0 create 1 MOD 2 Del
+    private Integer revtype;
+
+    @Column(name = "due_date")
+    private Date dueDate;
+
+    @Column(name = "priority")
+    private Priority priority;
+
+    @Column(name = "estimated_duration")
+    private Double estimatedDuration;
+
+    @Column(name = "estimated_start_date")
+    private Date estimatedStartDate;
+
+    @Column(name = "description")
+    private String description;
+
+    @Column(name = "title", nullable = false)
+    private String title;
+
+    @Column(name = "required_signature")
+    private Boolean requiredSignature;
+
+    @ManyToOne
+    @JoinColumn(name = "image_id")
+    private File image;
+
+    @ManyToOne
+    @JoinColumn(name = "category_id")
+    private WorkOrderCategory category;
+
+    @ManyToOne
+    @JoinColumn(name = "location_id")
+    private Location location;
+
+    @ManyToOne
+    @JoinColumn(name = "team_id")
+    private Team team;
+
+    @ManyToOne
+    @JoinColumn(name = "primary_user_id")
+    private User primaryUser;
+
+    @ManyToOne
+    @JoinColumn(name = "completed_by_id")
+    private User completedBy;
+
+    @Column(name = "completed_on")
+    private Date completedOn;
+
+    @Column(name = "status")
+    private Status status;
+
+    private String signature;
+
+    @Column(name = "archived")
+    private Boolean archived;
+
+    @ManyToOne
+    @JoinColumn(name = "parent_request_id")
+    private Request parentRequest;
+
+    @Column(name = "feedback")
+    private String feedback;
+
+    @ManyToOne
+    @JoinColumn(name = "parent_preventive_maintenance_id")
+    private PreventiveMaintenance parentPreventiveMaintenance;
+
+    // Include fields for _MOD columns
+
+    @ManyToOne
+    @JoinColumn(name = "asset_id")
+    private Asset asset;
+
+    // Include fields for _MOD columns for asset_id
+    // Fields for mod columns
+    @Column(name = "dueDate_MOD")
+    private Boolean dueDateMod;
+
+    @Column(name = "priority_MOD")
+    private Boolean priorityMod;
+
+    @Column(name = "estimatedDuration_MOD")
+    private Boolean estimatedDurationMod;
+
+    @Column(name = "estimatedStartDate_MOD")
+    private Boolean estimatedStartDateMod;
+
+    @Column(name = "description_MOD")
+    private Boolean descriptionMod;
+
+    @Column(name = "title_MOD")
+    private Boolean titleMod;
+
+    @Column(name = "requiredSignature_MOD")
+    private Boolean requiredSignatureMod;
+
+    @Column(name = "image_MOD")
+    private Boolean imageIdMod;
+
+    @Column(name = "category_MOD")
+    private Boolean categoryIdMod;
+
+    @Column(name = "location_MOD")
+    private Boolean locationIdMod;
+
+    @Column(name = "team_MOD")
+    private Boolean teamIdMod;
+
+    @Column(name = "primaryUser_MOD")
+    private Boolean primaryUserIdMod;
+
+    @Column(name = "completedBy_MOD")
+    private Boolean completedByIdMod;
+
+    @Column(name = "completedOn_MOD")
+    private Boolean completedOnMod;
+
+    @Column(name = "status_MOD")
+    private Boolean statusMod;
+
+    @Column(name = "signature_MOD")
+    private Boolean signatureMod;
+
+
+    @Column(name = "archived_MOD")
+    private Boolean archivedMod;
+
+    @Column(name = "parentRequest_MOD")
+    private Boolean parentRequestIdMod;
+
+    @Column(name = "feedback_MOD")
+    private Boolean feedbackMod;
+
+    @Column(name = "parentPreventiveMaintenance_MOD")
+    private Boolean parentPreventiveMaintenanceIdMod;
+
+
+    @Column(name = "asset_MOD")
+    private Boolean assetIdMod;
+
+    public String getSummary(MessageSource messageSource, Locale locale) {
+        StringBuilder summary = new StringBuilder();
+        String separator = ", ";
+        String colon = ": ";
+
+        if (dueDateMod != null && dueDateMod) {
+            summary.append(messageSource.getMessage("Due_Date", null, locale)).append(colon).append(dueDate).append(separator);
+        }
+        if (priorityMod != null && priorityMod) {
+            summary.append(messageSource.getMessage("Priority", null, locale)).append(colon).append(messageSource.getMessage(priority.toString(), null, locale)).append(
+                    separator);
+        }
+        if (estimatedDurationMod != null && estimatedDurationMod) {
+            summary.append(messageSource.getMessage("Estimated_Duration", null, locale)).append(colon).append(estimatedDuration).append(separator);
+        }
+        if (descriptionMod != null && descriptionMod) {
+            summary.append(messageSource.getMessage("Description", null, locale)).append(colon).append(description).append(separator);
+        }
+        if (titleMod != null && titleMod) {
+            summary.append(messageSource.getMessage("Title", null, locale)).append(colon).append(title).append(separator);
+        }
+        if (requiredSignatureMod != null && requiredSignatureMod) {
+            summary.append(messageSource.getMessage("Required_Signature", null, locale)).append(colon).append(getBooleanText(requiredSignature, messageSource, locale)).append(separator);
+        }
+        if (imageIdMod != null && imageIdMod) {
+            summary.append(messageSource.getMessage("Image", null, locale)).append(separator);
+        }
+        if (categoryIdMod != null && categoryIdMod) {
+            summary.append(messageSource.getMessage("Category", null, locale)).append(colon).append(category == null ? "N/A" : category.getName()).append(separator);
+        }
+        if (locationIdMod != null && locationIdMod) {
+            summary.append(messageSource.getMessage("Location", null, locale)).append(colon).append(location == null ? "N/A" : location.getName()).append(separator);
+        }
+        if (teamIdMod != null && teamIdMod) {
+            summary.append(messageSource.getMessage("Team", null, locale)).append(colon).append(team == null ? "N/A" : team.getName()).append(separator);
+        }
+        if (primaryUserIdMod != null && primaryUserIdMod) {
+            summary.append(messageSource.getMessage("Primary_User_Email", null, locale)).append(colon).append(primaryUser == null ? "N/A" : primaryUser.getFullName()).append(
+                    separator);
+        }
+        if (completedByIdMod != null && completedByIdMod) {
+            summary.append(messageSource.getMessage("Completed_By_Email", null, locale)).append(colon).append(completedBy == null ? "N/A" : completedBy.getFullName()).append(
+                    separator);
+        }
+        if (completedOnMod != null && completedOnMod) {
+            summary.append(messageSource.getMessage("Completed_On", null, locale)).append(colon).append(completedOn).append(separator);
+        }
+        if (statusMod != null && statusMod) {
+            summary.append(messageSource.getMessage("Status", null, locale)).append(colon).append(messageSource.getMessage(status.toString(), null, locale)).append(separator);
+        }
+        if (signatureMod != null && signatureMod) {
+            summary.append(messageSource.getMessage("Signature", null, locale)).append(separator);
+        }
+        if (archivedMod != null && archivedMod) {
+            summary.append(messageSource.getMessage("Archived", null, locale)).append(colon).append(getBooleanText(archived, messageSource, locale)).append(separator);
+        }
+        if (parentRequestIdMod != null && parentRequestIdMod) {
+            summary.append(messageSource.getMessage("Parent_Request", null, locale)).append(colon).append(parentRequest == null ? "N/A" : parentRequest.getTitle()).append(separator);
+        }
+        if (feedbackMod != null && feedbackMod) {
+            summary.append(messageSource.getMessage("Feedback", null, locale)).append(colon).append(feedback).append(separator);
+        }
+        if (parentPreventiveMaintenanceIdMod != null && parentPreventiveMaintenanceIdMod) {
+            summary.append(messageSource.getMessage("Parent_Preventive_Maintenance", null, locale)).append(colon).append(parentPreventiveMaintenance == null ? "N/A" :
+                    parentPreventiveMaintenance.getName()).append(separator);
+        }
+        if (assetIdMod != null && assetIdMod) {
+            summary.append(messageSource.getMessage("Asset", null, locale)).append(colon).append(asset == null ? "N/A" : asset.getName()).append(separator);
+        }
+
+        return summary.substring(0, Math.max(0, summary.length() - separator.length()));
+    }
+
+
+    private String getBooleanText(Boolean value, MessageSource messageSource, Locale locale) {
+        return value == null ? "" : messageSource.getMessage(value ? "Yes" : "No", null, locale);
+    }
+}
+

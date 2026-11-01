@@ -1,0 +1,159 @@
+package com.grash.controller;
+
+import com.grash.dto.LaborPatchDTO;
+import com.grash.dto.SuccessResponse;
+import com.grash.exception.CustomException;
+import com.grash.model.Labor;
+import com.grash.model.User;
+import com.grash.model.WorkOrder;
+import com.grash.model.enums.PlanFeatures;
+import com.grash.model.enums.Status;
+import com.grash.model.enums.TimeStatus;
+import com.grash.service.LaborService;
+import com.grash.service.UserService;
+import com.grash.service.WorkOrderService;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Collection;
+import java.util.Date;
+import java.util.Optional;
+
+@RestController
+@RequestMapping("/labors")
+@Tag(name = "Labor", description = "Operations on labor tracking")
+@RequiredArgsConstructor
+public class LaborController {
+
+    private final LaborService laborService;
+    private final UserService userService;
+    private final WorkOrderService workOrderService;
+
+    @GetMapping("/{id}")
+    @PreAuthorize("permitAll()")
+    public Labor getById(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<Labor> optionalLabor = laborService.findById(id);
+        if (optionalLabor.isPresent()) {
+            Labor savedLabor = optionalLabor.get();
+            if (savedLabor.getWorkOrder().canBeViewedBy(user)) {
+                return savedLabor;
+            } else throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+
+    }
+
+    @GetMapping("/work-order/{id}")
+    @PreAuthorize("permitAll()")
+    public Collection<Labor> getByWorkOrder(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<WorkOrder> optionalWorkOrder = workOrderService.findById(id);
+        if (optionalWorkOrder.isPresent()) {
+            if (!optionalWorkOrder.get().canBeViewedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            return laborService.findByWorkOrder(id);
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    @PostMapping("/work-order/{id}")
+    @PreAuthorize("permitAll()")
+    public Labor controlTimer(@PathVariable("id") Long id, HttpServletRequest req,
+                              @Parameter(description = "Whether to start the labor timer")
+                              @RequestParam(defaultValue = "true") boolean start) {
+        User user = userService.whoami(req);
+        Optional<WorkOrder> optionalWorkOrder = workOrderService.findById(id);
+        if (optionalWorkOrder.isPresent() && optionalWorkOrder.get().canBeEditedBy(user)) {
+            Optional<Labor> optionalLabor =
+                    laborService.findByWorkOrder(id).stream().filter(labor -> labor.isLogged() && labor.getAssignedTo().getId().equals(user.getId())).findFirst();
+            if (start) {
+                WorkOrder workOrder = optionalWorkOrder.get();
+                if (workOrder.getFirstTimeToReact() == null) workOrder.setFirstTimeToReact(new Date());
+
+                if (!workOrder.getStatus().equals(Status.IN_PROGRESS)) {
+                    workOrder.setStatus(Status.IN_PROGRESS);
+                    workOrderService.save(workOrder);
+                }
+                if (optionalLabor.isPresent()) {
+                    Labor labor = optionalLabor.get();
+                    if (labor.getStatus().equals(TimeStatus.RUNNING)) {
+                        return labor;
+                    } else {
+                        labor.setStartedAt(new Date());
+                        labor.setStatus(TimeStatus.RUNNING);
+                        return laborService.save(labor);
+                    }
+                } else {
+                    Labor labor = new Labor(user, user.getRate(), new Date(), optionalWorkOrder.get(), true,
+                            TimeStatus.RUNNING);
+                    return laborService.create(labor);
+                }
+            } else {
+                if (optionalLabor.isPresent()) {
+                    Labor labor = optionalLabor.get();
+                    if (labor.getStatus().equals(TimeStatus.STOPPED)) {
+                        return labor;
+                    } else {
+                        return laborService.stop(labor);
+                    }
+                } else throw new CustomException("No timer to stop", HttpStatus.NOT_FOUND);
+            }
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    @PostMapping("")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    Labor create(@Parameter(description = "Labor data to create") @Valid @RequestBody Labor laborReq,
+                 HttpServletRequest req) {
+        User user = userService.whoami(req);
+        if (user.getCompany().getSubscription().getSubscriptionPlan().getFeatures().contains(PlanFeatures.ADDITIONAL_TIME)) {
+            WorkOrder workOrder = workOrderService.findById(laborReq.getWorkOrder().getId()).get();
+            if (!workOrder.canBeEditedBy(user)) throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            if (workOrder.getFirstTimeToReact() == null) {
+                workOrder.setFirstTimeToReact(new Date());
+                workOrderService.save(workOrder);
+            }
+            return laborService.create(laborReq);
+        } else throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+    }
+
+    @PatchMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public Labor patch(@Parameter(description = "Labor fields to update") @Valid @RequestBody LaborPatchDTO labor,
+                       @PathVariable("id") Long id,
+                       HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<Labor> optionalLabor = laborService.findById(id);
+
+        if (optionalLabor.isPresent()) {
+            Labor savedLabor = optionalLabor.get();
+            if (!savedLabor.getWorkOrder().canBeEditedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            return laborService.update(id, labor);
+        } else throw new CustomException("Labor not found", HttpStatus.NOT_FOUND);
+    }
+
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public ResponseEntity delete(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+
+        Optional<Labor> optionalLabor = laborService.findById(id);
+        if (optionalLabor.isPresent()) {
+            Labor savedLabor = optionalLabor.get();
+            if (!savedLabor.getWorkOrder().canBeEditedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            laborService.delete(id);
+            return new ResponseEntity(new SuccessResponse(true, "Deleted successfully"),
+                    HttpStatus.OK);
+        } else throw new CustomException("Labor not found", HttpStatus.NOT_FOUND);
+    }
+}
+
+

@@ -1,0 +1,332 @@
+package com.grash.service;
+
+import io.github.bucket4j.Bandwidth;
+import io.github.bucket4j.BlockingBucket;
+import io.github.bucket4j.Bucket;
+import io.github.bucket4j.Refill;
+import lombok.Getter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
+@Component
+public class RateLimiterService {
+
+    private final ConcurrentMap<String, Bucket> demoCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> fileUploadCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> publicMiniCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> authenticatedUserCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> unAuthenticatedUserCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> fileUploadAuthenticatedCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> fileUploadBypassCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> loginAttemptCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Bucket> resetPasswordAttemptCache = new ConcurrentHashMap<>();
+
+    /**
+     * -- GETTER --
+     * Check if rate limiting is enabled
+     */
+    @Getter
+    @Value("${security.rate-limit.enabled:true}")
+    private boolean rateLimitEnabled;
+
+    @Value("${security.rate-limit.authenticated.short-term-requests:100}")
+    private int authenticatedShortTermRequests;
+
+    @Value("${security.rate-limit.authenticated.short-term-period-minutes:1}")
+    private int authenticatedShortTermPeriodMinutes;
+
+    @Value("${security.rate-limit.authenticated.long-term-requests:1000}")
+    private int authenticatedLongTermRequests;
+
+    @Value("${security.rate-limit.authenticated.long-term-period-hours:1}")
+    private int authenticatedLongTermPeriodHours;
+
+    @Value("${security.rate-limit.unauthenticated.short-term-requests:20}")
+    private int unauthenticatedShortTermRequests;
+
+    @Value("${security.rate-limit.unauthenticated.short-term-period-minutes:1}")
+    private int unauthenticatedShortTermPeriodMinutes;
+
+    @Value("${security.rate-limit.unauthenticated.long-term-requests:80}")
+    private int unauthenticatedLongTermRequests;
+
+    @Value("${security.rate-limit.unauthenticated.long-term-period-hours:1}")
+    private int unauthenticatedLongTermPeriodHours;
+
+    @Value("${security.rate-limit.file-upload.authenticated.short-term-requests:20}")
+    private int fileUploadAuthShortTermRequests;
+
+    @Value("${security.rate-limit.file-upload.authenticated.short-term-period-minutes:1}")
+    private int fileUploadAuthShortTermPeriodMinutes;
+
+    @Value("${security.rate-limit.file-upload.authenticated.long-term-requests:200}")
+    private int fileUploadAuthLongTermRequests;
+
+    @Value("${security.rate-limit.file-upload.authenticated.long-term-period-hours:1}")
+    private int fileUploadAuthLongTermPeriodHours;
+
+    @Value("${security.rate-limit.file-upload.bypass.short-term-requests:2}")
+    private int fileUploadBypassShortTermRequests;
+
+    @Value("${security.rate-limit.file-upload.bypass.short-term-period-minutes:1}")
+    private int fileUploadBypassShortTermPeriodMinutes;
+
+    @Value("${security.rate-limit.file-upload.bypass.long-term-requests:4}")
+    private int fileUploadBypassLongTermRequests;
+
+    @Value("${security.rate-limit.file-upload.bypass.long-term-period-hours:24}")
+    private int fileUploadBypassLongTermPeriodHours;
+
+    @Getter
+    @Value("${security.rate-limit.brute-force.enabled:true}")
+    private boolean bruteForceEnabled;
+
+    @Value("${security.rate-limit.brute-force.login.max-attempts:5}")
+    private int loginMaxAttempts;
+
+    @Value("${security.rate-limit.brute-force.login.period-minutes:15}")
+    private int loginPeriodMinutes;
+
+    @Value("${security.rate-limit.brute-force.login.long-term-max-attempts:20}")
+    private int loginLongTermMaxAttempts;
+
+    @Value("${security.rate-limit.brute-force.login.long-term-period-hours:24}")
+    private int loginLongTermPeriodHours;
+
+    @Value("${security.rate-limit.brute-force.reset-password.max-attempts:3}")
+    private int resetPasswordMaxAttempts;
+
+    @Value("${security.rate-limit.brute-force.reset-password.period-minutes:10}")
+    private int resetPasswordPeriodMinutes;
+
+    @Value("${security.rate-limit.brute-force.reset-password.long-term-max-attempts:10}")
+    private int resetPasswordLongTermMaxAttempts;
+
+    @Value("${security.rate-limit.brute-force.reset-password.long-term-period-hours:24}")
+    private int resetPasswordLongTermPeriodHours;
+
+
+    public Bucket resolveDemoBucket(String key) {
+        return demoCache.computeIfAbsent(key, this::newDemoBucket);
+    }
+
+    public Bucket resolveFileUploadBucket(String key) {
+        return fileUploadCache.computeIfAbsent(key, this::newFileUploadBucket);
+    }
+
+    public Bucket resolveFileUploadAuthenticatedBucket(String key) {
+        return fileUploadAuthenticatedCache.computeIfAbsent(key, this::newFileUploadAuthenticatedBucket);
+    }
+
+    public Bucket resolveFileUploadBypassBucket(String key) {
+        return fileUploadBypassCache.computeIfAbsent(key, this::newFileUploadBypassBucket);
+    }
+
+    public boolean tryConsumeFileUpload(String key, boolean bypass) {
+        Bucket bucket = bypass ? resolveFileUploadBypassBucket(key) : resolveFileUploadAuthenticatedBucket(key);
+        return bucket.tryConsume(1);
+    }
+
+    public Bucket resolvePublicMiniBucket(String key) {
+        return publicMiniCache.computeIfAbsent(key, this::newPublicMiniBucket);
+    }
+
+    private Bucket newDemoBucket(String key) {
+        // 1 request per minute
+        Bandwidth onePerMinute = Bandwidth.classic(1, Refill.greedy(1, Duration.ofMinutes(1)));
+
+        // 2 requests per 5 hours
+        Bandwidth twoPer5Hours = Bandwidth.classic(2, Refill.greedy(2, Duration.ofHours(5)));
+
+        return Bucket.builder()
+                .addLimit(onePerMinute)
+                .addLimit(twoPer5Hours)
+                .build();
+    }
+
+    private Bucket newFileUploadBucket(String key) {
+        // 1 requests per minute
+        Bandwidth tenPerMinute = Bandwidth.classic(4, Refill.greedy(1, Duration.ofMinutes(1)));
+
+        // 4 requests per hour
+        Bandwidth fiftyPerHour = Bandwidth.classic(12, Refill.greedy(12, Duration.ofHours(1)));
+
+        return Bucket.builder()
+                .addLimit(tenPerMinute)
+                .addLimit(fiftyPerHour)
+                .build();
+    }
+
+    private Bucket newFileUploadAuthenticatedBucket(String key) {
+        Bandwidth shortTerm = Bandwidth.classic(
+                fileUploadAuthShortTermRequests,
+                Refill.greedy(fileUploadAuthShortTermRequests, Duration.ofMinutes(fileUploadAuthShortTermPeriodMinutes))
+        );
+
+        Bandwidth longTerm = Bandwidth.classic(
+                fileUploadAuthLongTermRequests,
+                Refill.greedy(fileUploadAuthLongTermRequests, Duration.ofHours(fileUploadAuthLongTermPeriodHours))
+        );
+
+        return Bucket.builder()
+                .addLimit(shortTerm)
+                .addLimit(longTerm)
+                .build();
+    }
+
+    private Bucket newFileUploadBypassBucket(String key) {
+        Bandwidth shortTerm = Bandwidth.classic(
+                fileUploadBypassShortTermRequests,
+                Refill.greedy(fileUploadBypassShortTermRequests,
+                        Duration.ofMinutes(fileUploadBypassShortTermPeriodMinutes))
+        );
+
+        Bandwidth longTerm = Bandwidth.classic(
+                fileUploadBypassLongTermRequests,
+                Refill.greedy(fileUploadBypassLongTermRequests, Duration.ofHours(fileUploadBypassLongTermPeriodHours))
+        );
+
+        return Bucket.builder()
+                .addLimit(shortTerm)
+                .addLimit(longTerm)
+                .build();
+    }
+
+    private Bucket newPublicMiniBucket(String key) {
+        // 3 requests per minute
+        Bandwidth thirtyPerMinute = Bandwidth.classic(10, Refill.greedy(10, Duration.ofMinutes(1)));
+
+        //20
+        Bandwidth twoHundredPerHour = Bandwidth.classic(60, Refill.greedy(60, Duration.ofHours(1)));
+
+        return Bucket.builder()
+                .addLimit(thirtyPerMinute)
+                .addLimit(twoHundredPerHour)
+                .build();
+    }
+
+    /**
+     * Resolve rate limit bucket for authenticated users by user ID
+     */
+    public Bucket resolveAuthenticatedUserBucket(String userId) {
+        return authenticatedUserCache.computeIfAbsent(userId, this::newAuthenticatedUserBucket);
+    }
+
+    private Bucket newAuthenticatedUserBucket(String key) {
+        // Short-term limit: e.g., 100 requests per minute
+        Bandwidth shortTerm = Bandwidth.classic(
+                authenticatedShortTermRequests,
+                Refill.greedy(authenticatedShortTermRequests, Duration.ofMinutes(authenticatedShortTermPeriodMinutes))
+        );
+
+        // Long-term limit: e.g., 1000 requests per hour
+        Bandwidth longTerm = Bandwidth.classic(
+                authenticatedLongTermRequests,
+                Refill.greedy(authenticatedLongTermRequests, Duration.ofHours(authenticatedLongTermPeriodHours))
+        );
+
+        return Bucket.builder()
+                .addLimit(shortTerm)
+                .addLimit(longTerm)
+                .build();
+    }
+
+    public Bucket resolveUnAuthenticatedUserBucket(String clientIp) {
+        return unAuthenticatedUserCache.computeIfAbsent(clientIp, this::newUnAuthenticatedUserBucket);
+    }
+
+    private Bucket newUnAuthenticatedUserBucket(String key) {
+        Bandwidth shortTerm = Bandwidth.classic(
+                unauthenticatedShortTermRequests,
+                Refill.greedy(unauthenticatedShortTermRequests,
+                        Duration.ofMinutes(unauthenticatedShortTermPeriodMinutes))
+        );
+
+        Bandwidth longTerm = Bandwidth.classic(
+                unauthenticatedLongTermRequests,
+                Refill.greedy(unauthenticatedLongTermRequests, Duration.ofHours(unauthenticatedLongTermPeriodHours))
+        );
+
+        return Bucket.builder()
+                .addLimit(shortTerm)
+                .addLimit(longTerm)
+                .build();
+    }
+
+    /**
+     * Consume one attempt for the given login identifier (email or LDAP username).
+     * Returns true if the attempt is allowed, false once the limit is reached.
+     */
+    public boolean tryConsumeLoginAttempt(String key) {
+        return loginAttemptCache.computeIfAbsent(key, this::newLoginAttemptBucket).tryConsume(1);
+    }
+
+    /**
+     * Reset the failed/login attempts counter for a given identifier after a successful login.
+     */
+    public void resetLoginAttempts(String key) {
+        Bucket bucket = loginAttemptCache.get(key);
+        if (bucket != null) {
+            bucket.reset();
+        }
+    }
+
+    /**
+     * Consume one password reset request for the given email.
+     */
+    public boolean tryConsumeResetPasswordAttempt(String key) {
+        return resetPasswordAttemptCache.computeIfAbsent(key, this::newResetPasswordAttemptBucket).tryConsume(1);
+    }
+
+    /**
+     * Reset the password reset attempts counter for a given email.
+     */
+    public void resetResetPasswordAttempts(String key) {
+        Bucket bucket = resetPasswordAttemptCache.get(key);
+        if (bucket != null) {
+            bucket.reset();
+        }
+    }
+
+    private Bucket newLoginAttemptBucket(String key) {
+        // Short-term limit, e.g. 5 attempts per 15 minutes per identifier
+        Bandwidth shortTerm = Bandwidth.classic(
+                loginMaxAttempts,
+                Refill.greedy(loginMaxAttempts, Duration.ofMinutes(loginPeriodMinutes))
+        );
+
+        // Long-term limit, e.g. 20 attempts per 24 hours per identifier
+        Bandwidth longTerm = Bandwidth.classic(
+                loginLongTermMaxAttempts,
+                Refill.greedy(loginLongTermMaxAttempts, Duration.ofHours(loginLongTermPeriodHours))
+        );
+
+        return Bucket.builder()
+                .addLimit(shortTerm)
+                .addLimit(longTerm)
+                .build();
+    }
+
+    private Bucket newResetPasswordAttemptBucket(String key) {
+        // Short-term limit, e.g. 3 requests per 10 minutes per email
+        Bandwidth shortTerm = Bandwidth.classic(
+                resetPasswordMaxAttempts,
+                Refill.greedy(resetPasswordMaxAttempts, Duration.ofMinutes(resetPasswordPeriodMinutes))
+        );
+
+        // Long-term limit, e.g. 10 requests per 24 hours per email
+        Bandwidth longTerm = Bandwidth.classic(
+                resetPasswordLongTermMaxAttempts,
+                Refill.greedy(resetPasswordLongTermMaxAttempts, Duration.ofHours(resetPasswordLongTermPeriodHours))
+        );
+
+        return Bucket.builder()
+                .addLimit(shortTerm)
+                .addLimit(longTerm)
+                .build();
+    }
+}

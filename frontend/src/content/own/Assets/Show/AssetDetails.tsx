@@ -1,0 +1,327 @@
+import {
+  Box,
+  Button,
+  Card,
+  Divider,
+  Grid,
+  IconButton,
+  Link,
+  Stack,
+  styled,
+  Typography,
+  useTheme
+} from '@mui/material';
+import { useTranslation } from 'react-i18next';
+import { AssetDTO } from '../../../../models/owns/asset';
+import { UserMiniDTO } from '../../../../models/user';
+import { Customer } from '../../../../models/owns/customer';
+import { Vendor } from '../../../../models/owns/vendor';
+import Team, { TeamMiniDTO } from '../../../../models/owns/team';
+import {
+  getCustomerUrl,
+  getTeamUrl,
+  getUserUrl,
+  getVendorUrl
+} from '../../../../utils/urlPaths';
+import { useContext } from 'react';
+import { useDispatch } from '../../../../store';
+import { editAsset } from '../../../../slices/asset';
+import { CompanySettingsContext } from '../../../../contexts/CompanySettingsContext';
+import AssetStatusSelect from '../components/AssetStatusSelect';
+import Loading from '../../Analytics/Loading';
+import { PermissionEntity } from '../../../../models/owns/role';
+import SplitButton from '../../components/SplitButton';
+import AddTwoToneIcon from '@mui/icons-material/AddTwoTone';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import { PlanFeature } from '../../../../models/owns/subscriptionPlan';
+import * as React from 'react';
+import useAuth from '../../../../hooks/useAuth';
+import { useNavigate } from 'react-router-dom';
+import { getCustomFieldValuesForDetails } from '../../type';
+import { QRCodeSVG } from 'qrcode.react';
+
+interface PropsType {
+  asset: AssetDTO;
+  loading: boolean;
+  onCopy?: () => void;
+}
+const downloadQRCode = (value: string) => {
+  const svgElement = document.getElementById(`qr-code-${value}`);
+  if (!svgElement) return;
+
+  const svgData = new XMLSerializer().serializeToString(svgElement);
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const img = new Image();
+
+  canvas.width = 120;
+  canvas.height = 120;
+
+  const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(svgBlob);
+
+  img.onload = () => {
+    ctx?.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+
+    const pngUrl = canvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.href = pngUrl;
+    link.download = `qr-code-${value}.png`;
+    link.click();
+  };
+
+  img.src = url;
+};
+const AssetDetails = ({ asset, loading, onCopy }: PropsType) => {
+  const { t }: { t: any } = useTranslation();
+  const theme = useTheme();
+  const { hasCreatePermission, hasEditPermission } = useAuth();
+  const navigate = useNavigate();
+  const { getFormattedDate, getFormattedCurrency } = useContext(
+    CompanySettingsContext
+  );
+  const dispatch = useDispatch();
+  const informationFields = [
+    { label: t('name'), value: asset?.name },
+    { label: t('description'), value: asset?.description },
+    { label: t('category'), value: asset?.category?.name },
+    { label: t('model'), value: asset?.model },
+    { label: t('serial_number'), value: asset?.serialNumber },
+    { label: t('power'), value: asset?.power },
+    { label: t('manufacturer'), value: asset?.manufacturer },
+    {
+      label: t('acquisition_cost'),
+      value: asset?.acquisitionCost
+        ? getFormattedCurrency(asset?.acquisitionCost)
+        : null
+    },
+    { label: t('area'), value: asset?.area },
+    { label: t('barcode'), value: asset?.barCode, barcode: true }
+  ];
+  const moreInfosFields = [
+    {
+      label: t('additional_information'),
+      value: asset?.additionalInfos
+    },
+    {
+      label: t('placed_in_service'),
+      value: getFormattedDate(asset?.inServiceDate)
+    },
+    {
+      label: t('warranty_expiration'),
+      value: getFormattedDate(asset?.warrantyExpirationDate)
+    },
+    ...getCustomFieldValuesForDetails(
+      asset?.customFieldValues,
+      getFormattedDate
+    )
+  ];
+  const BasicField = ({
+    label,
+    value,
+    barcode
+  }: {
+    label: string | number;
+    value: string | number;
+    barcode?: boolean;
+  }) => {
+    return value ? (
+      <Grid item xs={12}>
+        <Stack spacing={5} direction="row">
+          <Typography variant="h6" fontWeight="bold">
+            {label}
+          </Typography>
+          <Box>
+            <Typography variant="h6">{value}</Typography>
+            {barcode && value && (
+              <QRCodeSVG
+                id={`qr-code-${value}`}
+                value={value.toString()}
+                size={120}
+                level="H"
+                onClick={() => {
+                  downloadQRCode(value.toString());
+                }}
+                style={{ marginTop: theme.spacing(1), cursor: 'pointer' }}
+              />
+            )}
+          </Box>
+        </Stack>
+        <Divider sx={{ mt: 1 }} />
+      </Grid>
+    ) : null;
+  };
+  const ListField = <T extends { id: number }>({
+    values,
+    label,
+    getHref,
+    getValueLabel
+  }: {
+    values: T[];
+    label: string;
+    getHref: (value: T) => string;
+    getValueLabel: (value: T) => string;
+  }) => {
+    return (
+      !!values?.length && (
+        <Grid item xs={12}>
+          <Stack spacing={5} direction="row">
+            <Typography variant="h6" fontWeight="bold">
+              {label}
+            </Typography>
+            <Stack spacing={1} direction="row">
+              {values.map((value, index) => (
+                <Stack key={value.id} spacing={1} direction="row">
+                  <Link href={getHref(value)} variant="h6">
+                    {getValueLabel(value)}
+                  </Link>
+                  {index !== values.length - 1 && (
+                    <Typography variant="h6">,</Typography>
+                  )}
+                </Stack>
+              ))}
+            </Stack>
+          </Stack>
+          <Divider sx={{ mt: 1 }} />
+        </Grid>
+      )
+    );
+  };
+  if (loading)
+    return (
+      <Box
+        sx={{
+          height: '50vh',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center'
+        }}
+      >
+        <Loading />
+      </Box>
+    );
+  return (
+    <Box sx={{ px: 4 }}>
+      <Grid container spacing={2}>
+        <Grid item xs={12}>
+          <Card sx={{ p: 2 }}>
+            <Grid container spacing={2} padding={2}>
+              {asset?.image && (
+                <Grid item xs={12}>
+                  <img width="auto" height="300px" src={asset.image.url} />
+                </Grid>
+              )}
+              <Grid item xs={12}>
+                <Stack direction={'row'} justifyContent={'space-between'}>
+                  <Stack direction={'row'} spacing={2} alignItems={'center'}>
+                    <Typography variant="h3">
+                      {t('asset_information')}
+                    </Typography>
+                    {asset && (
+                      <AssetStatusSelect
+                        value={asset.status}
+                        onChange={(status) =>
+                          dispatch(editAsset(asset.id, { ...asset, status }))
+                        }
+                        disabled={
+                          !hasEditPermission(PermissionEntity.ASSETS, asset)
+                        }
+                      />
+                    )}
+                    {hasCreatePermission(PermissionEntity.ASSETS) && (
+                      <IconButton onClick={onCopy}>
+                        <ContentCopyIcon />
+                      </IconButton>
+                    )}
+                  </Stack>
+                  {hasCreatePermission(PermissionEntity.WORK_ORDERS) && (
+                    <Button
+                      onClick={() =>
+                        navigate(`/app/work-orders?asset=${asset.id}`)
+                      }
+                      startIcon={<AddTwoToneIcon />}
+                      variant={'contained'}
+                    >
+                      {t('work_order')}
+                    </Button>
+                  )}
+                </Stack>
+              </Grid>
+              {informationFields.map((field) => (
+                <BasicField key={field.label} {...field} />
+              ))}
+              <Grid item xs={12}>
+                <Typography variant="h3">{t('more_informations')}</Typography>
+              </Grid>
+              {moreInfosFields.map((field) => (
+                <BasicField key={field.label} {...field} />
+              ))}
+              {asset?.primaryUser && (
+                <Grid item xs={12}>
+                  <Stack spacing={5} direction="row">
+                    <Typography variant="h6" fontWeight="bold">
+                      {t('primary_worker')}
+                    </Typography>
+                    <Link
+                      key={asset.primaryUser.id}
+                      href={`/app/people-teams/people/${asset.primaryUser.id}`}
+                      variant="h6"
+                    >
+                      {`${asset.primaryUser.firstName} ${asset.primaryUser.lastName}`}
+                    </Link>
+                  </Stack>
+                  <Divider sx={{ mt: 1 }} />
+                </Grid>
+              )}
+              {asset?.location && (
+                <Grid item xs={12}>
+                  <Stack spacing={5} direction="row">
+                    <Typography variant="h6" fontWeight="bold">
+                      {t('location')}
+                    </Typography>
+                    <Link
+                      href={`/app/locations/${asset.location.id}`}
+                      variant="h6"
+                    >
+                      {asset.location.name}
+                    </Link>
+                  </Stack>
+                  <Divider sx={{ mt: 1 }} />
+                </Grid>
+              )}
+              <ListField
+                values={asset?.assignedTo}
+                label={t('assigned_to')}
+                getHref={(user: UserMiniDTO) => getUserUrl(user.id)}
+                getValueLabel={(user: UserMiniDTO) =>
+                  `${user.firstName} ${user.lastName}`
+                }
+              />
+              <ListField
+                values={asset?.customers}
+                label={t('customers')}
+                getHref={(customer: Customer) => getCustomerUrl(customer.id)}
+                getValueLabel={(customer: Customer) => customer.name}
+              />
+              <ListField
+                values={asset?.vendors}
+                label={t('vendors')}
+                getHref={(vendor: Vendor) => getVendorUrl(vendor.id)}
+                getValueLabel={(vendor: Vendor) => vendor.companyName}
+              />
+              <ListField
+                values={asset?.teams}
+                label={t('teams')}
+                getHref={(team: TeamMiniDTO) => getTeamUrl(team.id)}
+                getValueLabel={(team: TeamMiniDTO) => team.name}
+              />
+            </Grid>
+          </Card>
+        </Grid>
+      </Grid>
+    </Box>
+  );
+};
+
+export default AssetDetails;

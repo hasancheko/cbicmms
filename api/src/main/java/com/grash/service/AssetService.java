@@ -1,0 +1,728 @@
+package com.grash.service;
+
+import com.grash.advancedsearch.SearchCriteria;
+import com.grash.advancedsearch.SpecificationBuilder;
+import com.grash.dto.AssetPatchDTO;
+import com.grash.dto.AssetPostDTO;
+import com.grash.dto.AssetShowDTO;
+import com.grash.dto.cutomField.CustomFieldValuePostDTO;
+import com.grash.dto.imports.AssetImportDTO;
+import com.grash.dto.license.LicenseEntitlement;
+import com.grash.exception.CustomException;
+import com.grash.mapper.AssetMapper;
+import com.grash.model.*;
+import com.grash.model.enums.AssetStatus;
+import com.grash.model.enums.CustomFieldEntityType;
+import com.grash.model.enums.NotificationType;
+import com.grash.model.enums.PermissionEntity;
+import com.grash.model.enums.PortalFieldType;
+import com.grash.model.enums.RoleType;
+import com.grash.model.enums.webhook.WebhookEvent;
+import com.grash.repository.AssetRepository;
+import com.grash.utils.Helper;
+import com.grash.utils.Sanitizer;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.MessageSource;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityNotFoundException;
+import jakarta.transaction.Transactional;
+
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import static com.grash.utils.Consts.usageBasedFreeLimits;
+
+@Service
+@RequiredArgsConstructor
+public class AssetService {
+    private final AssetRepository assetRepository;
+    private LocationService locationService;
+    private final AssetCategoryService assetCategoryService;
+    private final UserService userService;
+    private final CustomerService customerService;
+    private final VendorService vendorService;
+    private LaborService laborService;
+    private final NotificationService notificationService;
+    private final TeamService teamService;
+    private final PartService partService;
+    private final AssetMapper assetMapper;
+    private final EntityManager em;
+    private final AssetDowntimeService assetDowntimeService;
+    private WorkOrderService workOrderService;
+    private final MessageSource messageSource;
+    private final CustomSequenceService customSequenceService;
+    private final LicenseService licenseService;
+    private final RateLimiterService rateLimiterService;
+    private final RequestPortalService requestPortalService;
+    private WebhookDispatchService webhookDispatchService;
+    private final CustomFieldValueService customFieldValueService;
+
+    @Autowired
+    public void setDeps(@Lazy LocationService locationService, @Lazy LaborService laborService,
+                        @Lazy WorkOrderService workOrderService,
+                        @Lazy WebhookDispatchService webhookDispatchService
+    ) {
+        this.locationService = locationService;
+        this.laborService = laborService;
+        this.workOrderService = workOrderService;
+        this.webhookDispatchService = webhookDispatchService;
+    }
+
+    @Transactional
+    public Asset create(Asset asset, User user) {
+        checkUsageBasedLimit(user.getCompany());
+        Company company = user.getCompany();
+        if (asset instanceof AssetPostDTO assetPostDTO) {
+            asset = assetMapper.fromPostDto(assetPostDTO);
+            if (assetPostDTO.getCustomFields() != null && !assetPostDTO.getCustomFields().isEmpty()) {
+                setAssetCustomFields(asset, assetPostDTO.getCustomFields(), company);
+            }
+        }
+        if (asset.getParentAsset() != null && !licenseService.hasEntitlement(LicenseEntitlement.ASSET_HIERARCHY))
+            throw new CustomException("You need a license to add a child asset to another asset.",
+                    HttpStatus.FORBIDDEN);
+        asset.setCustomId(getAssetNumber(company));
+        if ((asset.getBarCode() == null || asset.getBarCode().isBlank()) && Boolean.TRUE.equals(user.getCompany().getCompanySettings().getGeneralPreferences().getAutoGenerateAssetBarcode())) {
+            asset.setBarCode(UUID.randomUUID().toString());
+        }
+        if (asset.getParentAsset() != null && asset.getLocation() == null) {
+            asset.setLocation(assetRepository.findById(asset.getParentAsset().getId())
+                    .orElseThrow(() -> new CustomException("Parent asset not found", HttpStatus.NOT_FOUND))
+                    .getLocation());
+        }
+        Sanitizer.sanitizeAsset(asset);
+        Asset savedAsset = assetRepository.saveAndFlush(asset);
+        em.refresh(savedAsset);
+        Map<String, Object> webhookPayload = new HashMap<>();
+        webhookPayload.put("assetId", savedAsset.getId());
+        Object serializedAsset = assetMapper.toShowDto(savedAsset, this);
+        webhookDispatchService.dispatchWebhook(company, WebhookEvent.NEW_ASSET, webhookPayload,
+                "newAsset", serializedAsset, null, null, null, null, null);
+        return savedAsset;
+    }
+
+    private String getAssetNumber(Company company) {
+        Long nextSequence = customSequenceService.getNextAssetSequence(company);
+        return "A" + String.format("%06d", nextSequence);
+    }
+
+    private void setAssetCustomFields(Asset asset, List<CustomFieldValuePostDTO> customFieldValuePostDTOS,
+                                      Company company) {
+        customFieldValueService.setCustomFields(
+                asset,
+                asset.getCustomFieldValues(),
+                customFieldValuePostDTOS,
+                company,
+                CustomFieldEntityType.ASSET,
+                cfv -> cfv.setAsset(asset)
+        );
+    }
+
+    @Transactional
+    protected Asset update(Long id, AssetPatchDTO asset, Company company) {
+        if (asset.getParentAsset() != null && !licenseService.hasEntitlement(LicenseEntitlement.ASSET_HIERARCHY))
+            throw new CustomException("You need a license to add a child asset to another asset.",
+                    HttpStatus.FORBIDDEN);
+        if (assetRepository.existsById(id)) {
+            Asset savedAsset = assetRepository.findById(id).get();
+            AssetStatus previousStatus = savedAsset.getStatus();
+            if (asset.getCustomFields() != null && !asset.getCustomFields().isEmpty()) {
+                setAssetCustomFields(savedAsset, asset.getCustomFields(), company);
+            }
+            Asset patchedAsset = assetMapper.updateAsset(savedAsset, asset);
+            Sanitizer.sanitizeAsset(patchedAsset);
+            patchedAsset = assetRepository.saveAndFlush(patchedAsset);
+            em.refresh(patchedAsset);
+
+            if (previousStatus != patchedAsset.getStatus()) {
+                dispatchAssetStatusChangeWebhook(patchedAsset, previousStatus, patchedAsset.getStatus());
+            }
+
+            return patchedAsset;
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    private void checkUsageBasedLimit(Company company) {
+        Integer threshold = usageBasedFreeLimits.get(LicenseEntitlement.UNLIMITED_ASSETS);
+        if (!licenseService.hasEntitlement(LicenseEntitlement.UNLIMITED_ASSETS)
+                && assetRepository.hasMoreThan(company.getId(), threshold.longValue() - 1
+        ))
+            throw new CustomException("You need a license to add a new asset. Free Limit reached: " + threshold,
+                    HttpStatus.FORBIDDEN);
+    }
+
+    public Asset save(Asset asset) {
+        return assetRepository.save(asset);
+    }
+
+    public List<Asset> saveAll(List<Asset> assets) {
+        return assetRepository.saveAll(assets);
+    }
+
+    public Collection<Asset> getAll() {
+        return assetRepository.findAll();
+    }
+
+    public void delete(Long id) {
+        assetRepository.deleteById(id);
+    }
+
+    public Optional<Asset> findById(Long id) {
+        return assetRepository.findById(id);
+    }
+
+    public Optional<Asset> findByNfcIdAndCompany(String nfcId, Long companyId) {
+        return assetRepository.findByNfcIdAndCompany_Id(nfcId, companyId);
+    }
+
+    public List<Asset> findByCompany(Long id) {
+        return assetRepository.findByCompany_Id(id);
+    }
+
+    public Page<Asset> findByCompanyForExport(Long companyId, Pageable pageable) {
+        return assetRepository.findByCompanyForExport(companyId, pageable);
+    }
+
+    public List<Asset> findByCompany(Long id, Sort sort) {
+        return assetRepository.findByCompany_Id(id, sort);
+    }
+
+    public List<Asset> findByCompanyAndParentAssetNull(Long id, Pageable pageable) {
+        return assetRepository.findByCompany_IdAndParentAssetIsNull(id, pageable).toList();
+    }
+
+
+    public List<Asset> findByCompanyAndBefore(Long id, Date date) {
+        return assetRepository.findByCompany_IdAndCreatedAtBefore(id, date);
+    }
+
+    public double getTotalAcquisitionCost(Long companyId, Date end) {
+        return assetRepository.getTotalAcquisitionCost(companyId, end);
+    }
+
+    public Page<Asset> findAssetChildren(Long id, Pageable pageable) {
+        return assetRepository.findByParentAsset_Id(id, pageable);
+    }
+
+    public void notify(Asset asset, String title, String message) {
+        notificationService.createMultiple(asset.getUsers().stream().map(user -> new Notification(message, user,
+                NotificationType.ASSET, asset.getId())).collect(Collectors.toList()), true, title);
+    }
+
+    public void patchNotify(Asset oldAsset, Asset newAsset, Locale locale) {
+        String title = messageSource.getMessage("new_assignment", null, locale);
+        String message = messageSource.getMessage("notification_asset_assigned", new Object[]{newAsset.getName()},
+                locale);
+        notificationService.createMultiple(oldAsset.getNewUsersToNotify(newAsset.getUsers()).stream().map(user ->
+                new Notification(message, user, NotificationType.ASSET, newAsset.getId())).collect(Collectors.toList()), true, title);
+    }
+
+    public List<Asset> findByLocation(Long id) {
+        return assetRepository.findByLocation_Id(id);
+    }
+
+    private void stopAssetDowntime(Asset asset) {
+        Collection<AssetDowntime> assetDowntimes = assetDowntimeService.findByAsset(asset.getId());
+        Optional<AssetDowntime> optionalRunningDowntime =
+                assetDowntimes.stream().filter(downtime -> downtime.getDuration() == 0).findFirst();
+
+        if (optionalRunningDowntime.isPresent()) {
+            AssetDowntime runningDowntime = optionalRunningDowntime.get();
+            runningDowntime.setDuration(Helper.getDateDiff(runningDowntime.getStartsOn(), new Date(),
+                    TimeUnit.SECONDS));
+            assetDowntimeService.save(runningDowntime);
+        }
+
+        AssetStatus previousStatus = asset.getStatus();
+        asset.setStatus(AssetStatus.OPERATIONAL);
+        save(asset);
+
+        if (previousStatus != AssetStatus.OPERATIONAL) {
+            dispatchAssetStatusChangeWebhook(asset, previousStatus, AssetStatus.OPERATIONAL);
+        }
+    }
+
+    private void recursivelyStopChildrenDowntime(Asset parentAsset) {
+        List<Asset> children = findAssetChildren(parentAsset.getId(), Pageable.unpaged()).getContent();
+        for (Asset child : children) {
+            stopAssetDowntime(child);
+            recursivelyStopChildrenDowntime(child);
+        }
+    }
+
+    public void stopDownTime(Long id, Locale locale) {
+        Asset savedAsset = findById(id).orElseThrow(() -> new EntityNotFoundException("Asset not found"));
+        stopAssetDowntime(savedAsset);
+        recursivelyStopChildrenDowntime(savedAsset);
+        String message = messageSource.getMessage("notification_asset_operational",
+                new Object[]{savedAsset.getName()}, locale);
+        notify(savedAsset, message, messageSource.getMessage("asset_status_change", null, locale));
+    }
+
+    public void triggerDownTime(Long id, Locale locale, AssetStatus status) {
+        Date now = new Date();
+        Asset asset = findById(id).get();
+        AssetStatus previousAssetStatus = asset.getStatus();
+        createAssetDowntime(asset, now, asset.getCompany());
+        Asset parentAsset = asset.getParentAsset();
+        while (parentAsset != null) {
+            createAssetDowntime(parentAsset, now, asset.getCompany());
+            if (!parentAsset.getStatus().isReallyDown()) {
+                AssetStatus previousParentStatus = parentAsset.getStatus();
+                parentAsset.setStatus(status);
+                save(parentAsset);
+                dispatchAssetStatusChangeWebhook(parentAsset, previousParentStatus, status);
+            }
+            parentAsset = parentAsset.getParentAsset();
+        }
+        asset.setStatus(status);
+        save(asset);
+        dispatchAssetStatusChangeWebhook(asset, previousAssetStatus, status);
+        String message = messageSource.getMessage("notification_asset_down", new Object[]{asset.getName()}, locale);
+        notify(asset, message, messageSource.getMessage("asset_status_change", null, locale));
+
+    }
+
+    private void createAssetDowntime(Asset asset, Date startsOn, Company company) {
+        AssetDowntime downtime = AssetDowntime.builder()
+                .startsOn(startsOn)
+                .asset(asset)
+                .build();
+        downtime.setCompany(company);
+        assetDowntimeService.create(downtime, false);
+    }
+
+    public Page<AssetShowDTO> findBySearchCriteria(SearchCriteria searchCriteria) {
+        SpecificationBuilder<Asset> builder = new SpecificationBuilder<>();
+        searchCriteria.getFilterFields().forEach(builder::with);
+        Pageable page = PageRequest.of(searchCriteria.getPageNum(), searchCriteria.getPageSize(),
+                searchCriteria.getDirection(), searchCriteria.getSortField());
+        Page<Asset> assets = assetRepository.findAll(builder.build(), page);
+        Set<Long> parentIdsWithChildren = getParentIdsWithChildren(
+                assets.getContent().stream().map(Asset::getId).collect(Collectors.toList()));
+        return assets.map(asset -> assetMapper.toShowDto(asset, parentIdsWithChildren));
+    }
+
+    public SearchCriteria getSearchCriteria(User user, SearchCriteria searchCriteria) {
+        if (user.getRole().getRoleType().equals(RoleType.ROLE_CLIENT)) {
+            if (user.getRole().getViewPermissions().contains(PermissionEntity.ASSETS)) {
+                searchCriteria.filterCompany(user);
+                boolean canViewOthers = user.getRole().getViewOtherPermissions().contains(PermissionEntity.ASSETS);
+                if (!canViewOthers) {
+                    searchCriteria.filterCreatedBy(user);
+                }
+            } else throw new CustomException("Access Denied", HttpStatus.FORBIDDEN);
+        }
+        return searchCriteria;
+    }
+
+    public Asset getByNfcIdAndCompany(String nfcId, User user) {
+        if (!licenseService.hasEntitlement(LicenseEntitlement.NFC_BARCODE))
+            throw new CustomException("You need a license to scan an asset", HttpStatus.FORBIDDEN);
+        return findByNfcIdAndCompany(nfcId, user.getCompany().getId()).get();
+    }
+
+    public Asset getByBarcodeAndCompany(String data, User user) {
+        if (!licenseService.hasEntitlement(LicenseEntitlement.NFC_BARCODE))
+            throw new CustomException("You need a license to scan an asset", HttpStatus.FORBIDDEN);
+        return findByBarcodeAndCompany(data, user.getCompany().getId()).get();
+    }
+
+    public Asset checkAccessToAssetId(Long assetId, User user) {
+        Asset asset = findById(assetId).orElseThrow(() -> new CustomException("Not found", HttpStatus.NOT_FOUND));
+        if (!asset.canBeViewedBy(user))
+            throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+        return asset;
+    }
+
+    public Collection<Asset> findByLocationAndUser(Long locationId, User user) {
+        Optional<Location> optionalLocation = locationService.findById(locationId);
+        if (optionalLocation.isPresent()) {
+            if (!optionalLocation.get().canBeViewedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            return findByLocation(locationId);
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    public Collection<Asset> findByPartAndUser(Long partId, User user) {
+        Optional<Part> optionalPart = partService.findById(partId);
+        if (optionalPart.isPresent()) {
+            if (!optionalPart.get().canBeViewedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            return optionalPart.get().getAssets();
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    public List<Asset> findChildren(Long id, User user, Pageable pageable) {
+        if (!user.getRole().getViewPermissions().contains(PermissionEntity.ASSETS))
+            throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+        if (id.equals(0L) && user.getRole().getRoleType().equals(RoleType.ROLE_CLIENT)) {
+            return findByCompanyAndParentAssetNull(user.getCompany().getId(), pageable);
+        }
+        Optional<Asset> optionalAsset = findById(id);
+        if (optionalAsset.isPresent()) {
+            return findAssetChildren(id, pageable).getContent();
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    public Page<Asset> findChildrenPaginated(Long id, User user, Pageable pageable) {
+        if (!user.getRole().getViewPermissions().contains(PermissionEntity.ASSETS))
+            throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+        if (id.equals(0L) && user.getRole().getRoleType().equals(RoleType.ROLE_CLIENT)) {
+            return assetRepository.findByCompany_IdAndParentAssetIsNull(user.getCompany().getId(), pageable);
+        }
+        Optional<Asset> optionalAsset = findById(id);
+        if (optionalAsset.isPresent()) {
+            return findAssetChildren(id, pageable);
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    @Transactional
+    public Asset createByUser(AssetPostDTO assetReq, User user) {
+        if (user.getRole().getCreatePermissions().contains(PermissionEntity.ASSETS)) {
+            if (assetReq.getBarCode() != null) {
+                Optional<Asset> optionalAssetWithSameBarCode =
+                        findByBarcodeAndCompany(assetReq.getBarCode(), user.getCompany().getId());
+                if (optionalAssetWithSameBarCode.isPresent()) {
+                    throw new CustomException("Asset with same barCode exists", HttpStatus.NOT_ACCEPTABLE);
+                }
+            }
+            if (assetReq.getNfcId() != null) {
+                Optional<Asset> optionalAssetWithSameNfcId = findByNfcIdAndCompany(assetReq.getNfcId(),
+                        user.getCompany().getId());
+                if (optionalAssetWithSameNfcId.isPresent()) {
+                    throw new CustomException("Asset with same nfc code exists", HttpStatus.NOT_ACCEPTABLE);
+                }
+            }
+            Asset createdAsset = create(assetReq, user);
+            String message = messageSource.getMessage("notification_asset_assigned",
+                    new Object[]{createdAsset.getName()}, Helper.getLocale(user));
+            notify(createdAsset, messageSource.getMessage("new_assignment", null,
+                    Helper.getLocale(user)), message);
+            return createdAsset;
+        } else throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+    }
+
+    @Transactional
+    public Asset patch(Long id, AssetPatchDTO asset, User user) {
+        Optional<Asset> optionalAsset = findById(id);
+
+        if (optionalAsset.isPresent()) {
+            Asset savedAsset = optionalAsset.get();
+            em.detach(savedAsset);
+            if (savedAsset.canBeEditedBy(user)) {
+                if (!asset.getStatus().isReallyDown() && savedAsset.getStatus().isReallyDown()) {
+                    stopDownTime(savedAsset.getId(), Helper.getLocale(user));
+                } else if (asset.getStatus().isReallyDown() && !savedAsset.getStatus().isReallyDown()) {
+                    triggerDownTime(savedAsset.getId(), Helper.getLocale(user), asset.getStatus());
+                }
+                if (asset.getBarCode() != null) {
+                    Optional<Asset> optionalAssetWithSameBarCode =
+                            findByBarcodeAndCompany(asset.getBarCode(), user.getCompany().getId());
+                    if (optionalAssetWithSameBarCode.isPresent() && !optionalAssetWithSameBarCode.get().getId().equals(id)) {
+                        throw new CustomException("Asset with same barcode exists", HttpStatus.NOT_ACCEPTABLE);
+                    }
+                }
+                if (asset.getNfcId() != null) {
+                    Optional<Asset> optionalAssetWithSameNfcId = findByNfcIdAndCompany(asset.getNfcId(),
+                            user.getCompany().getId());
+                    if (optionalAssetWithSameNfcId.isPresent() && !optionalAssetWithSameNfcId.get().getId().equals(id)) {
+                        throw new CustomException("Asset with same nfc code exists", HttpStatus.NOT_ACCEPTABLE);
+                    }
+                }
+                if (asset.getParentAsset() != null && asset.getParentAsset().getId().equals(id))
+                    throw new CustomException("Parent asset cannot be the same id", HttpStatus.NOT_ACCEPTABLE);
+                Asset patchedAsset = update(id, asset, user.getCompany());
+                patchNotify(savedAsset, patchedAsset, Helper.getLocale(user));
+                return patchedAsset;
+            } else throw new CustomException("Forbidden", HttpStatus.FORBIDDEN);
+        } else throw new CustomException("Asset not found", HttpStatus.NOT_FOUND);
+    }
+
+    public List<Asset> findMini(Long locationId, User user) {
+        if (locationId == null) {
+            return findByCompany(user.getCompany().getId());
+        }
+        return findByLocation(locationId);
+    }
+
+    public List<Asset> findMiniPublic(String portalUUID, Long locationId, String clientIp) {
+        if (!rateLimiterService.resolvePublicMiniBucket(clientIp).tryConsume(1)) {
+            throw new CustomException("Rate limit exceeded. Try again later.", HttpStatus.TOO_MANY_REQUESTS);
+        }
+        List<Asset> assets;
+        RequestPortal requestPortal = requestPortalService.findByUuidByUser(portalUUID).get();
+        if (requestPortal.getFields().stream().anyMatch(requestPortalField -> requestPortalField.getAsset() != null && requestPortalField.getType().equals(PortalFieldType.ASSET)))
+            throw new CustomException("This portal is not configured to show assets", HttpStatus.FORBIDDEN);
+        Long companyId = requestPortal.getCompany().getId();
+        if (locationId == null) {
+            assets = findByCompany(companyId);
+        } else {
+            assets = assetRepository.findByLocation_IdAndCompany_Id(locationId, companyId);
+        }
+        return assets;
+    }
+
+    public void deleteByIdAndUser(Long id, User user) {
+        Optional<Asset> optionalAsset = findById(id);
+        if (optionalAsset.isPresent()) {
+            Asset savedAsset = optionalAsset.get();
+            if (savedAsset.canBeDeletedBy(user)) {
+                delete(id);
+            } else throw new CustomException("Forbidden", HttpStatus.FORBIDDEN);
+        } else throw new CustomException("Asset not found", HttpStatus.NOT_FOUND);
+    }
+
+    public List<Asset> findByNameIgnoreCaseAndCompany(String assetName, Long companyId) {
+        return assetRepository.findByNameIgnoreCaseAndCompany_Id(assetName, companyId);
+    }
+
+    public void setAssetFieldsFromImportDto(Asset asset, AssetImportDTO dto, Company company,
+                                            Map<String, Asset> assetsByName) {
+        checkUsageBasedLimit(company);
+        if (!licenseService.hasEntitlement(LicenseEntitlement.ASSET_HIERARCHY) && dto.getParentAssetName() != null && !dto.getParentAssetName().isEmpty())
+            throw new CustomException("You need a license to import assets with hierarchy", HttpStatus.FORBIDDEN);
+        Long companyId = company.getId();
+        asset.setCompany(company);
+        asset.setArea(dto.getArea());
+        if (dto.getBarCode() != null && !dto.getBarCode().trim().isEmpty()) {
+            Optional<Asset> optionalAssetWithSameBarCode = findByBarcodeAndCompany(dto.getBarCode(), company.getId());
+            if (optionalAssetWithSameBarCode.isPresent()) {
+                boolean hasError = false;
+                if (dto.getId() == null) {//creation
+                    hasError = true;
+                } else {//update
+                    if (!dto.getId().equals(optionalAssetWithSameBarCode.get().getId())) {
+                        hasError = true;
+                    }
+                }
+                if (hasError)
+                    throw new CustomException("Asset with same barcode exists: " + dto.getBarCode(),
+                            HttpStatus.NOT_ACCEPTABLE);
+            }
+        }
+        asset.setBarCode(dto.getBarCode());
+        asset.setArea(dto.getArea());
+        asset.setArchived(Helper.getBooleanFromString(dto.getArchived()));
+        asset.setDescription(dto.getDescription());
+        asset.setModel(dto.getModel());
+        asset.setPower(dto.getPower());
+        asset.setCustomId(getAssetNumber(company));
+        asset.setManufacturer(dto.getManufacturer());
+        Optional<Location> optionalLocation = locationService.findByNameIgnoreCaseAndCompany(dto.getLocationName(),
+                companyId).stream().findFirst();
+        optionalLocation.ifPresent(asset::setLocation);
+        // Check parent asset in batch first, then in database
+        if (dto.getParentAssetName() != null && !dto.getParentAssetName().isEmpty()) {
+            Asset parentAsset = assetsByName != null ? assetsByName.get(dto.getParentAssetName()) : null;
+            if (parentAsset == null) {
+                parentAsset = findByNameIgnoreCaseAndCompany(dto.getParentAssetName(), companyId)
+                        .stream().findFirst().orElse(null);
+            }
+            asset.setParentAsset(parentAsset);
+        }
+        if (dto.getCategory() != null && !dto.getCategory().isBlank()) {
+            AssetCategory category = assetCategoryService.getOrCreate(dto.getCategory(), company.getCompanySettings());
+            asset.setCategory(category);
+        }
+        asset.setName(dto.getName());
+        Optional<User> optionalPrimaryUser = userService.findByEmailAndCompany(dto.getPrimaryUserEmail(), companyId);
+        optionalPrimaryUser.ifPresent(asset::setPrimaryUser);
+        asset.setWarrantyExpirationDate(Helper.getDateFromExcelDate(dto.getWarrantyExpirationDate()));
+        asset.setAdditionalInfos(dto.getAdditionalInfos());
+        asset.setSerialNumber(dto.getSerialNumber());
+        List<User> assignedTo = new ArrayList<>();
+        dto.getAssignedToEmails().forEach(email -> {
+            Optional<User> optionalUser1 = userService.findByEmailAndCompany(email, companyId);
+            optionalUser1.ifPresent(assignedTo::add);
+        });
+        asset.setAssignedTo(assignedTo);
+        List<Team> teams = new ArrayList<>();
+        dto.getTeamsNames().forEach(teamName -> {
+            Optional<Team> optionalTeam = teamService.findByNameIgnoreCaseAndCompany(teamName, companyId);
+            optionalTeam.ifPresent(teams::add);
+        });
+        asset.setTeams(teams);
+        asset.setStatus(AssetStatus.getAssetStatusFromString(dto.getStatus(), Helper.getLocale(company),
+                messageSource));
+        asset.setAcquisitionCost(dto.getAcquisitionCost());
+        List<Customer> customers = new ArrayList<>();
+        dto.getCustomersNames().forEach(name -> {
+            Optional<Customer> optionalCustomer = customerService.findByNameIgnoreCaseAndCompany(name, companyId);
+            optionalCustomer.ifPresent(customers::add);
+        });
+        asset.setCustomers(customers);
+        List<Vendor> vendors = new ArrayList<>();
+        dto.getVendorsNames().forEach(name -> {
+            Optional<Vendor> optionalVendor = vendorService.findByNameIgnoreCaseAndCompany(name, companyId);
+            optionalVendor.ifPresent(vendors::add);
+        });
+        asset.setVendors(vendors);
+        List<Part> parts = new ArrayList<>();
+        dto.getPartsNames().forEach(name -> {
+            Optional<Part> optionalPart = partService.findByNameIgnoreCaseAndCompany(name, companyId);
+            optionalPart.ifPresent(parts::add);
+        });
+        asset.setParts(parts);
+        Sanitizer.sanitizeAsset(asset);
+
+//        assetRepository.save(asset);
+    }
+
+    public Optional<Asset> findByIdAndCompany(Long id, Long companyId) {
+        return assetRepository.findByIdAndCompany_Id(id, companyId);
+    }
+
+    public List<Asset> findByIdsAndCompany(List<Long> ids, Long companyId) {
+        return assetRepository.findByIdInAndCompany_Id(ids, companyId);
+    }
+
+    public Optional<Asset> findByBarcodeAndCompany(String data, Long id) {
+        return assetRepository.findByBarCodeAndCompany_Id(data, id);
+    }
+
+    public static List<AssetImportDTO> orderAssets(List<AssetImportDTO> assets) {
+        Map<String, List<AssetImportDTO>> assetMap = new HashMap<>();
+        List<AssetImportDTO> identifiedTopLevelAssets = new ArrayList<>();
+
+        Set<String> allAssetNames = new HashSet<>();
+        for (AssetImportDTO asset : assets) {
+            if (asset.getName() != null) { // Guard against assets with null names if possible
+                allAssetNames.add(asset.getName());
+            }
+        }
+
+        // Group assets by parent name and identify top-level assets
+        // Using a HashSet here to ensure we only consider each unique asset object once
+        // for building the map and topLevelAssets, in case the input list has duplicate object references.
+        Set<AssetImportDTO> distinctInputAssets = new HashSet<>(assets);
+
+        for (AssetImportDTO asset : distinctInputAssets) { // Iterate over unique asset objects
+            String parentName = asset.getParentAssetName();
+            assetMap.computeIfAbsent(parentName, k -> new ArrayList<>()).add(asset);
+
+            // An asset is top-level if it has no parent,
+            // or its declared parent doesn't exist in the provided list of assets.
+            if (parentName == null || !allAssetNames.contains(parentName)) {
+                identifiedTopLevelAssets.add(asset);
+            }
+        }
+
+        List<AssetImportDTO> orderedAssets = new ArrayList<>();
+        Set<AssetImportDTO> visited = new HashSet<>(); // Keep track of visited assets
+
+        // Process identified top-level assets.
+        // The `visited` set will ensure each asset is added only once,
+        // even if it appears multiple times in `identifiedTopLevelAssets`
+        // (e.g., multiple distinct orphan objects point to the same non-existent parent)
+        // or if children of different top-level assets overlap due to same names.
+        orderAssetsRecursive(assetMap, identifiedTopLevelAssets, orderedAssets, visited);
+
+        return orderedAssets;
+    }
+
+    private static void orderAssetsRecursive(Map<String, List<AssetImportDTO>> assetMap,
+                                             List<AssetImportDTO> currentLevelAssets,
+                                             List<AssetImportDTO> orderedAssets,
+                                             Set<AssetImportDTO> visited) {
+        if (currentLevelAssets == null) {
+            return;
+        }
+        for (AssetImportDTO asset : currentLevelAssets) {
+            // Only process and add the asset if it hasn't been visited yet
+            if (visited.add(asset)) { // .add() returns true if the element was new to the set
+                orderedAssets.add(asset);
+                List<AssetImportDTO> children = assetMap.get(asset.getName());
+                if (children != null) {
+                    orderAssetsRecursive(assetMap, children, orderedAssets, visited);
+                }
+            }
+        }
+    }
+
+
+    public Boolean hasChildren(Long assetId) {
+        return assetRepository.countByParentAsset_Id(assetId) > 0;
+    }
+
+    public Set<Long> getParentIdsWithChildren(Collection<Long> assetIds) {
+        if (assetIds == null || assetIds.isEmpty()) {
+            return Collections.emptySet();
+        }
+        return new HashSet<>(assetRepository.findParentIdsWithChildren(assetIds));
+    }
+
+    public long getMTBF(Long assetId, Date start, Date end) {
+        List<AssetDowntime> downtimes = assetDowntimeService.findByAssetAndStartsOnBetween(assetId, start, end);
+        downtimes.sort(Comparator.comparing(AssetDowntime::getStartsOn));
+        if (downtimes.size() < 2) {
+            return 0L;
+        }
+
+        long intervalsSum = 0;
+        int numberOfIntervals = downtimes.size() - 1;
+
+        for (int i = 0; i < downtimes.size() - 1; i++) {
+            AssetDowntime currentDowntime = downtimes.get(i);
+            AssetDowntime nextDowntime = downtimes.get(i + 1);
+
+            long interval = Helper.getDateDiff(currentDowntime.getEndsOn(), nextDowntime.getStartsOn(), TimeUnit.DAYS);
+            intervalsSum += interval;
+        }
+
+        return intervalsSum / numberOfIntervals;
+    }
+
+    public long getMTTR(Long assetId, Date start, Date end) {
+        Collection<WorkOrder> workOrders = workOrderService.findByAssetAndCreatedAtBetween(assetId, start, end);
+        List<Labor> labors = new ArrayList<>();
+        for (WorkOrder workOrder : workOrders) {
+            labors.addAll(laborService.findByWorkOrder(workOrder.getId()));
+        }
+        return workOrders.isEmpty() ? 0 : (Labor.getTotalWorkDuration(labors) / 60) / workOrders.size();
+    }
+
+    public long getDowntime(Long assetId, Date start, Date end) {
+        Collection<AssetDowntime> downtimes = assetDowntimeService.findByAssetAndStartsOnBetween(assetId, start, end);
+        return downtimes.stream().mapToLong(AssetDowntime::getDuration).sum();
+    }
+
+    public long getUptime(Long assetId, Date start, Date end) {
+        Asset asset = findById(assetId).get();
+        Date now = new Date();
+        Date effectiveStart = start.after(asset.getRealCreatedAt()) ? start : asset.getRealCreatedAt();
+        Date effectiveEnd = end.before(now) ? end : now;
+        if (effectiveStart.after(effectiveEnd)) {
+            return 0;
+        }
+        long effectiveDuration = Helper.getDateDiff(effectiveStart, effectiveEnd, TimeUnit.SECONDS);
+        return effectiveDuration - getDowntime(assetId, effectiveStart, effectiveEnd);
+    }
+
+    public double getTotalCost(Long assetId, Date start, Date end, Boolean includeLaborCost) {
+        Collection<WorkOrder> workOrders = workOrderService.findByAssetAndCreatedAtBetween(assetId, start, end);
+        return workOrderService.getAllCost(workOrders, includeLaborCost);
+    }
+
+    private void dispatchAssetStatusChangeWebhook(Asset asset, AssetStatus previousStatus, AssetStatus newStatus) {
+        Map<String, Object> webhookPayload = new HashMap<>();
+        webhookPayload.put("assetId", asset.getId());
+        webhookPayload.put("assetName", asset.getName());
+        webhookPayload.put("previousStatus", previousStatus);
+        webhookPayload.put("newStatus", newStatus);
+        Object serializedAsset = assetMapper.toShowDto(asset, this);
+        webhookDispatchService.dispatchWebhook(asset.getCompany(), WebhookEvent.ASSET_STATUS_CHANGE, webhookPayload,
+                "changedAsset", serializedAsset, null, newStatus, null, null, null);
+    }
+}
+

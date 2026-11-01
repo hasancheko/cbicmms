@@ -1,0 +1,118 @@
+package com.grash.controller;
+
+import com.grash.dto.AssetDowntimePatchDTO;
+import com.grash.dto.SuccessResponse;
+import com.grash.exception.CustomException;
+import com.grash.model.Asset;
+import com.grash.model.AssetDowntime;
+import com.grash.model.User;
+import com.grash.model.enums.PermissionEntity;
+import com.grash.service.AssetDowntimeService;
+import com.grash.service.AssetService;
+import com.grash.service.UserService;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+
+import java.util.Collection;
+import java.util.Optional;
+
+@RestController
+@RequestMapping("/asset-downtimes")
+@Tag(name = "Asset Downtime", description = "Operations on asset downtime tracking")
+@RequiredArgsConstructor
+public class AssetDowntimeController {
+
+    private final AssetDowntimeService assetDowntimeService;
+    private final UserService userService;
+    private final AssetService assetService;
+
+
+    @GetMapping("/{id}")
+    @PreAuthorize("permitAll()")
+    public AssetDowntime getById(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+        if (user.getRole().getViewPermissions().contains(PermissionEntity.ASSETS)) {
+            Optional<AssetDowntime> optionalAssetDowntime = assetDowntimeService.findById(id);
+            if (optionalAssetDowntime.isPresent()) {
+                if (!optionalAssetDowntime.get().getAsset().canBeViewedBy(user))
+                    throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+                return optionalAssetDowntime.get();
+            } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+        } else throw new CustomException("Access Denied", HttpStatus.FORBIDDEN);
+    }
+
+    @PostMapping("")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    AssetDowntime create(@Parameter(description = "Asset downtime to create") @Valid @RequestBody AssetDowntime assetDowntimeReq,
+                         HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<Asset> optionalAsset = assetService.findById(assetDowntimeReq.getAsset().getId());
+        if (optionalAsset.isEmpty()) {
+            throw new CustomException("Asset Not found", HttpStatus.BAD_REQUEST);
+        }
+        if (optionalAsset.get().getRealCreatedAt().after(assetDowntimeReq.getStartsOn())) {
+            throw new CustomException("The downtime can't occur before the asset in service date",
+                    HttpStatus.NOT_ACCEPTABLE);
+        }
+        if (optionalAsset.get().canBeEditedBy(user)) {
+            return assetDowntimeService.create(assetDowntimeReq, true);
+        } else throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+    }
+
+    @GetMapping("/asset/{id}")
+    @PreAuthorize("permitAll()")
+    public Collection<AssetDowntime> getByAsset(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<Asset> optionalAsset = assetService.findById(id);
+        if (optionalAsset.isPresent()) {
+            if (!optionalAsset.get().canBeViewedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            return assetDowntimeService.findByAsset(id);
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    @PatchMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public AssetDowntime patch(@Parameter(description = "Asset downtime fields to update") @Valid @RequestBody AssetDowntimePatchDTO assetDowntime,
+                               @PathVariable("id") Long id,
+                               HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<AssetDowntime> optionalAssetDowntime = assetDowntimeService.findById(id);
+        if (optionalAssetDowntime.isPresent()) {
+            if (optionalAssetDowntime.get().getAsset().canBeEditedBy(user)) {
+                return assetDowntimeService.update(id, assetDowntime);
+            } else {
+                throw new CustomException("Can't patch assetDowntime of someone else", HttpStatus.NOT_ACCEPTABLE);
+            }
+        } else {
+            throw new CustomException("Category not found", HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public ResponseEntity<SuccessResponse> delete(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+
+        Optional<AssetDowntime> optionalAssetDowntime = assetDowntimeService.findById(id);
+        if (optionalAssetDowntime.isPresent()) {
+            if (optionalAssetDowntime.get().getAsset().canBeEditedBy(user)) {
+                assetDowntimeService.delete(id);
+                return new ResponseEntity<>(new SuccessResponse(true, "Deleted successfully"),
+                        HttpStatus.OK);
+            } else throw new CustomException("Forbidden", HttpStatus.FORBIDDEN);
+        } else throw new CustomException("AssetDowntime not found", HttpStatus.NOT_FOUND);
+    }
+
+}
+
+

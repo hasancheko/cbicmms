@@ -1,0 +1,262 @@
+package com.grash.service;
+
+import com.grash.advancedsearch.FilterField;
+import com.grash.advancedsearch.SearchCriteria;
+import com.grash.advancedsearch.SpecificationBuilder;
+import com.grash.dto.NotificationPatchDTO;
+import com.grash.dto.PushTokenPayload;
+import com.grash.exception.CustomException;
+import com.grash.mapper.NotificationMapper;
+import com.grash.model.Notification;
+import com.grash.model.User;
+import com.grash.model.PushNotificationToken;
+import com.grash.model.enums.RoleType;
+import com.grash.repository.NotificationRepository;
+import com.grash.utils.Helper;
+import io.github.jav.exposerversdk.*;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
+import org.springframework.messaging.simp.SimpMessageSendingOperations;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+@Transactional
+public class NotificationService {
+    private final NotificationRepository notificationRepository;
+    private final NotificationMapper notificationMapper;
+    private final PushNotificationTokenService pushNotificationTokenService;
+    private final SimpMessageSendingOperations messagingTemplate;
+
+    @Async
+    public void create(Notification notification) {
+        Notification savedNotification = notificationRepository.save(notification);
+        messagingTemplate.convertAndSendToUser(notification.getUser().getEmail(),
+                "/notifications", savedNotification);
+    }
+
+    @Async
+    public void createMultiple(List<Notification> notifications, boolean mobile, String title) {
+        if (notifications.isEmpty()) return;
+        List<Notification> notificationsToSend = excludeCurrentUser(notifications);
+        if (notificationsToSend.isEmpty()) return;
+        List<Notification> savedNotifications = notificationRepository.saveAll(notificationsToSend);
+        savedNotifications.forEach(notification ->
+                messagingTemplate.convertAndSendToUser(notification.getUser().getEmail(),
+                        "/notifications", notification));
+        if (mobile && !notificationsToSend.isEmpty())
+            try {
+                sendPushNotifications(notificationsToSend.stream().map(Notification::getUser).collect(Collectors.toList()),
+                        title, notificationsToSend.get(0).getMessage(), new HashMap<String, Object>() {{
+                            put("type", notificationsToSend.get(0).getNotificationType());
+                            put("id", notificationsToSend.get(0).getResourceId());
+                        }});
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+    }
+
+
+    public Collection<Notification> getAll(User user) {
+        if (user.getRole().getRoleType().equals(RoleType.ROLE_CLIENT)) {
+            return findByUser(user.getId());
+        } else return notificationRepository.findAll();
+    }
+
+    public SearchCriteria getSearchCriteria(User user, SearchCriteria searchCriteria) {
+        if (user.getRole().getRoleType().equals(RoleType.ROLE_CLIENT)) {
+            searchCriteria.getFilterFields().add(FilterField.builder()
+                    .field("user")
+                    .value(user.getId())
+                    .operation("eq")
+                    .values(new ArrayList<>())
+                    .build());
+        }
+        return searchCriteria;
+    }
+
+    private List<Notification> excludeCurrentUser(List<Notification> notifications) {
+        User currentUser = Helper.getCurrentUser();
+        if (currentUser == null) return notifications;
+        Long currentUserId = currentUser.getId();
+        return notifications.stream()
+                .filter(notification -> !notification.getUser().getId().equals(currentUserId))
+                .collect(Collectors.toList());
+    }
+
+    public Notification getById(Long id, User user) {
+        Optional<Notification> optionalNotification = notificationRepository.findById(id);
+        if (optionalNotification.isPresent()) {
+            Notification savedNotification = optionalNotification.get();
+            checkAccessToNotification(savedNotification, user);
+            return savedNotification;
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    public Notification patch(Long id, NotificationPatchDTO notificationsPatchDTO, User user) {
+        Optional<Notification> optionalNotification = notificationRepository.findById(id);
+        if (optionalNotification.isPresent()) {
+            Notification savedNotification = optionalNotification.get();
+            checkAccessToNotification(savedNotification, user);
+            return notificationRepository.save(notificationMapper.updateNotification(savedNotification,
+                    notificationsPatchDTO));
+        } else throw new CustomException("Notification not found", HttpStatus.NOT_FOUND);
+    }
+
+    public void savePushToken(User user, PushTokenPayload tokenPayload) {
+        String token = tokenPayload.getToken();
+        PushNotificationToken pushNotificationToken;
+        Optional<PushNotificationToken> optionalPushNotificationToken =
+                pushNotificationTokenService.findByUser(user.getId());
+        if (optionalPushNotificationToken.isPresent()) {
+            pushNotificationToken = optionalPushNotificationToken.get();
+            pushNotificationToken.setToken(token);
+        } else {
+            pushNotificationToken = PushNotificationToken.builder()
+                    .user(user)
+                    .token(token).build();
+        }
+        pushNotificationTokenService.save(pushNotificationToken);
+    }
+
+    private void checkAccessToNotification(Notification notification, User user) {
+        if (!notification.getUser().getId().equals(user.getId()))
+            throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+    }
+
+    public void delete(Long id) {
+        notificationRepository.deleteById(id);
+    }
+
+    public Optional<Notification> findById(Long id) {
+        return notificationRepository.findById(id);
+    }
+
+    public Collection<Notification> findByUser(Long id) {
+        return notificationRepository.findByUser_Id(id);
+    }
+
+    public Page<Notification> findBySearchCriteria(SearchCriteria searchCriteria) {
+        SpecificationBuilder<Notification> builder = new SpecificationBuilder<>();
+        searchCriteria.getFilterFields().forEach(builder::with);
+        Pageable page = PageRequest.of(searchCriteria.getPageNum(), searchCriteria.getPageSize(),
+                searchCriteria.getDirection(), searchCriteria.getSortField());
+        return notificationRepository.findAll(builder.build(), page);
+    }
+
+    public void sendPushNotifications(Collection<User> users, String title, String message,
+                                      Map<String, Object> data) throws PushClientException, InterruptedException {
+
+        List<String> tokens = new ArrayList<>();
+        users.forEach(user -> {
+            Optional<PushNotificationToken> optionalPushNotificationToken =
+                    pushNotificationTokenService.findByUser(user.getId());
+            if (optionalPushNotificationToken.isPresent()) {
+                String token = optionalPushNotificationToken.get().getToken();
+                if (PushClient.isExponentPushToken(token))
+                    tokens.add(token);
+            }
+        });
+
+        ExpoPushMessage expoPushMessage = new ExpoPushMessage();
+        expoPushMessage.getTo().addAll(tokens);
+        expoPushMessage.setTitle(title);
+        expoPushMessage.setBody(message);
+        expoPushMessage.setData(data);
+
+        List<ExpoPushMessage> expoPushMessages = new ArrayList<>();
+        expoPushMessages.add(expoPushMessage);
+
+        PushClient client = new PushClient();
+        List<List<ExpoPushMessage>> chunks = client.chunkPushNotifications(expoPushMessages);
+
+        List<CompletableFuture<List<ExpoPushTicket>>> messageRepliesFutures = new ArrayList<>();
+
+        for (List<ExpoPushMessage> chunk : chunks) {
+            messageRepliesFutures.add(client.sendPushNotificationsAsync(chunk));
+        }
+
+        // Wait for each completable future to finish
+        List<ExpoPushTicket> allTickets = new ArrayList<>();
+        for (CompletableFuture<List<ExpoPushTicket>> messageReplyFuture : messageRepliesFutures) {
+            try {
+                allTickets.addAll(messageReplyFuture.get());
+            } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+            }
+        }
+
+        List<ExpoPushMessageTicketPair<ExpoPushMessage>> zippedMessagesTickets =
+                client.zipMessagesTickets(expoPushMessages, allTickets);
+
+        List<ExpoPushMessageTicketPair<ExpoPushMessage>> okTicketMessages =
+                client.filterAllSuccessfulMessages(zippedMessagesTickets);
+        String okTicketMessagesString = okTicketMessages.stream().map(
+                p -> "Title: " + p.message.getTitle() + ", Id:" + p.ticket.getId()
+        ).collect(Collectors.joining(","));
+        System.out.println(
+                "Recieved OK ticket for " +
+                        okTicketMessages.size() +
+                        " messages: " + okTicketMessagesString
+        );
+
+        List<ExpoPushMessageTicketPair<ExpoPushMessage>> errorTicketMessages =
+                client.filterAllMessagesWithError(zippedMessagesTickets);
+        String errorTicketMessagesString = errorTicketMessages.stream().map(
+                p -> "Title: " + p.message.getTitle() + ", Error: " + p.ticket.getDetails().getError()
+        ).collect(Collectors.joining(","));
+        System.out.println(
+                "Recieved ERROR ticket for " +
+                        errorTicketMessages.size() +
+                        " messages: " +
+                        errorTicketMessagesString
+        );
+
+
+        // TODO
+        // Countdown 30s
+//            int wait = 30;
+//            for (int i = wait; i >= 0; i--) {
+//                System.out.print("Waiting for " + wait + " seconds. " + i + "s\r");
+//                Thread.sleep(1000);
+//            }
+//        System.out.println("Fetching receipts...");
+//
+//        List<String> ticketIds = (client.getTicketIdsFromPairs(okTicketMessages));
+//        CompletableFuture<List<ExpoPushReceipt>> receiptFutures = client.getPushNotificationReceiptsAsync(ticketIds);
+//
+//        List<ExpoPushReceipt> receipts = new ArrayList<>();
+//        try {
+//            receipts = receiptFutures.get();
+//        } catch (ExecutionException | InterruptedException e) {
+//            e.printStackTrace();
+//        }
+//
+//        System.out.println(
+//                "Received " + receipts.size() + " receipts:");
+//
+//        for (ExpoPushReceipt receipt : receipts) {
+//            System.out.println(
+//                    "Receipt for id: " +
+//                            receipt.getId() +
+//                            " had status: " +
+//                            receipt.getStatus());
+//
+//        }
+
+    }
+
+    public void readAll(Long userId) {
+        notificationRepository.readAll(userId);
+    }
+}

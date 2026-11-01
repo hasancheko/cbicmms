@@ -1,0 +1,8 @@
+<!--/*@thymesVar id="messageBody" type="java.lang.String"*/-->
+<div th:replace="fragments/main-layout :: emailTemplate(
+    #{workOrderReport},
+    #{workOrderReportHeader},
+    ${messageBody},
+    null,
+    null
+    )"></div>

@@ -1,0 +1,58 @@
+name: EAS Update
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-update.yml'
+
+env:
+  GIT_SHA: ${{ github.sha }}
+
+jobs:
+  update:
+    name: EAS Update
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for EXPO_TOKEN
+        run: |
+          if [ -z "${{ secrets.EXPO_TOKEN }}" ]; then
+            echo "You must provide an EXPO_TOKEN secret linked to this project's Expo account in this repo's secrets. Learn more: https://docs.expo.dev/eas-update/github-actions"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: mobile
+
+      - name: Publish update
+        env:
+          API_URL: ${{secrets.API_URL}}
+          CLARITY_ID: ${{secrets.MOBILE_CLARITY_ID}}
+          SENTRY_DSN: ${{secrets.MOBILE_SENTRY_DSN}}
+          SENTRY_AUTH_TOKEN: ${{secrets.MOBILE_SENTRY_AUTH_TOKEN}}
+          SENTRY_ORG: atlas-cmms
+          SENTRY_ENVIRONMENT: production
+          GOOGLE_SERVICES_BASE64: ${{secrets.GOOGLE_SERVICES_BASE64}}
+          SENTRY_RELEASE: ${{ env.GIT_SHA }}
+          EAS_UPDATE_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          eas update --channel production --message "$EAS_UPDATE_MESSAGE"
+        working-directory: mobile

@@ -1,0 +1,480 @@
+import type { PayloadAction } from '@reduxjs/toolkit';
+import { createSlice } from '@reduxjs/toolkit';
+import type { AppThunk } from 'src/store';
+import WorkOrder from '../models/owns/workOrder';
+import api from '../utils/api';
+import { Task } from '../models/owns/tasks';
+import {
+  FilterField,
+  getInitialPage,
+  Page,
+  SearchCriteria
+} from '../models/owns/page';
+import {
+  WorkOrderBase,
+  WorkOrderBaseMiniDTO
+} from 'src/models/owns/workOrderBase';
+import PreventiveMaintenance from 'src/models/owns/preventiveMaintenance';
+import { revertAll } from 'src/utils/redux';
+import File from '../models/owns/file';
+import { cancellableFetch } from 'src/utils/cancellableRequest';
+import { addToUnscheduled } from './workload';
+import type { WorkloadWorkOrderDTO } from 'src/models/owns/workload';
+
+const basePath = 'work-orders';
+
+export interface CalendarEvent<T extends WorkOrderBase> {
+  type: string;
+  date: string;
+  endDate: string;
+  event: T;
+}
+
+interface WorkOrderState {
+  workOrders: Page<WorkOrder>;
+  workOrdersMini: Page<WorkOrderBaseMiniDTO>;
+  workOrdersByLocation: { [key: number]: WorkOrder[] };
+  workOrdersByPart: { [key: number]: WorkOrder[] };
+  singleWorkOrder: WorkOrder;
+  urgentCount: number;
+  loadingGet: boolean;
+  calendar: {
+    events: CalendarEvent<WorkOrder | PreventiveMaintenance>[];
+  };
+}
+
+const initialState: WorkOrderState = {
+  workOrders: getInitialPage<WorkOrder>(),
+  workOrdersByLocation: {},
+  workOrdersByPart: {},
+  singleWorkOrder: null,
+  urgentCount: 0,
+  loadingGet: false,
+  workOrdersMini: getInitialPage<WorkOrderBaseMiniDTO>(),
+  calendar: {
+    events: []
+  }
+};
+
+const slice = createSlice({
+  name: 'workOrders',
+  initialState,
+  extraReducers: (builder) => builder.addCase(revertAll, () => initialState),
+  reducers: {
+    getWorkOrders(
+      state: WorkOrderState,
+      action: PayloadAction<{ workOrders: Page<WorkOrder> }>
+    ) {
+      const { workOrders } = action.payload;
+      state.workOrders = workOrders;
+    },
+    getWorkOrdersMini(
+      state: WorkOrderState,
+      action: PayloadAction<{ workOrders: Page<WorkOrderBaseMiniDTO> }>
+    ) {
+      const { workOrders } = action.payload;
+      state.workOrdersMini = workOrders;
+    },
+    getSingleWorkOrder(
+      state: WorkOrderState,
+      action: PayloadAction<{ workOrder: WorkOrder }>
+    ) {
+      const { workOrder } = action.payload;
+      state.singleWorkOrder = workOrder;
+    },
+    addWorkOrder(
+      state: WorkOrderState,
+      action: PayloadAction<{ workOrder: WorkOrder }>
+    ) {
+      const { workOrder } = action.payload;
+      state.workOrders.content = [workOrder, ...state.workOrders.content];
+    },
+    editWorkOrder(
+      state: WorkOrderState,
+      action: PayloadAction<{ workOrder: WorkOrder }>
+    ) {
+      const { workOrder } = action.payload;
+      const inContent = state.workOrders.content.some(
+        (workOrder1) => workOrder1.id === workOrder.id
+      );
+      if (inContent) {
+        state.workOrders.content = state.workOrders.content.map(
+          (workOrder1) => {
+            if (workOrder1.id === workOrder.id) {
+              return workOrder;
+            }
+            return workOrder1;
+          }
+        );
+      }
+      if (state.singleWorkOrder?.id === workOrder.id)
+        state.singleWorkOrder = workOrder;
+    },
+    addFilesToWorkOrder(
+      state: WorkOrderState,
+      action: PayloadAction<{ files: File[]; id: number }>
+    ) {
+      const { files, id } = action.payload;
+      const inContent = state.workOrders.content.some(
+        (workOrder1) => workOrder1.id === id
+      );
+      if (inContent) {
+        state.workOrders.content = state.workOrders.content.map(
+          (workOrder1) => {
+            if (workOrder1.id === id) {
+              workOrder1.files.push(...files);
+            }
+            return workOrder1;
+          }
+        );
+      }
+      if (state.singleWorkOrder?.id === id)
+        state.singleWorkOrder.files.push(...files);
+    },
+    setFilesForWorkOrder(
+      state: WorkOrderState,
+      action: PayloadAction<{ files: File[]; id: number }>
+    ) {
+      const { files, id } = action.payload;
+      const inContent = state.workOrders.content.some(
+        (workOrder1) => workOrder1.id === id
+      );
+      if (inContent) {
+        state.workOrders.content = state.workOrders.content.map(
+          (workOrder1) => {
+            if (workOrder1.id === id) {
+              workOrder1.files = files;
+            }
+            return workOrder1;
+          }
+        );
+      }
+      if (state.singleWorkOrder?.id === id) state.singleWorkOrder.files = files;
+    },
+    deleteWorkOrder(
+      state: WorkOrderState,
+      action: PayloadAction<{ id: number }>
+    ) {
+      const { id } = action.payload;
+      const workOrderIndex = state.workOrders.content.findIndex(
+        (workOrder) => workOrder.id === id
+      );
+      if (workOrderIndex !== -1)
+        state.workOrders.content.splice(workOrderIndex, 1);
+    },
+    clearSingleWorkOrder(state: WorkOrderState, action: PayloadAction<{}>) {
+      state.singleWorkOrder = null;
+    },
+    getWorkOrdersByLocation(
+      state: WorkOrderState,
+      action: PayloadAction<{ workOrders: WorkOrder[]; id: number }>
+    ) {
+      const { workOrders, id } = action.payload;
+      state.workOrdersByLocation[id] = workOrders;
+    },
+    getWorkOrdersByPart(
+      state: WorkOrderState,
+      action: PayloadAction<{ workOrders: WorkOrder[]; id: number }>
+    ) {
+      const { workOrders, id } = action.payload;
+      state.workOrdersByPart[id] = workOrders;
+    },
+    getEvents(
+      state: WorkOrderState,
+      action: PayloadAction<{
+        events: CalendarEvent<WorkOrder | PreventiveMaintenance>[];
+      }>
+    ) {
+      const { events } = action.payload;
+      state.calendar.events = events;
+    },
+    setLoadingGet(
+      state: WorkOrderState,
+      action: PayloadAction<{ loading: boolean }>
+    ) {
+      const { loading } = action.payload;
+      state.loadingGet = loading;
+    },
+    getUrgentWorkOrdersCount(
+      state: WorkOrderState,
+      action: PayloadAction<{ count: number }>
+    ) {
+      const { count } = action.payload;
+      state.urgentCount = count;
+    },
+    incrementUrgentCount(state: WorkOrderState) {
+      state.urgentCount += 1;
+    },
+    decrementUrgentCount(state: WorkOrderState) {
+      state.urgentCount = Math.max(0, state.urgentCount - 1);
+    }
+  }
+});
+
+export const reducer = slice.reducer;
+
+const isUrgent = (
+  workOrder: { dueDate?: string; status?: string } | null
+): boolean => {
+  if (!workOrder?.dueDate || workOrder.status === 'COMPLETE') return false;
+  return (
+    new Date(workOrder.dueDate).getTime() <= Date.now() + 2 * 24 * 3600 * 1000
+  );
+};
+
+const findWorkOrder = (all: WorkOrderState, id: number): WorkOrder | null =>
+  all.workOrders.content.find((workOrder) => workOrder.id === id) ??
+  (all.singleWorkOrder?.id === id ? all.singleWorkOrder : null);
+
+export const getWorkOrders =
+  (criteria: SearchCriteria): AppThunk =>
+  async (dispatch) => {
+    await cancellableFetch(
+      dispatch,
+      'getWorkOrders',
+      (signal) =>
+        api.post<Page<WorkOrder>>(`${basePath}/search`, criteria, { signal }),
+      (workOrders) => dispatch(slice.actions.getWorkOrders({ workOrders })),
+      (loading) => dispatch(slice.actions.setLoadingGet({ loading }))
+    );
+  };
+
+export const getWorkOrdersMini =
+  (criteria: SearchCriteria): AppThunk =>
+  async (dispatch) => {
+    await cancellableFetch(
+      dispatch,
+      'getWorkOrdersMini',
+      (signal) =>
+        api.post<Page<WorkOrderBaseMiniDTO>>(
+          `${basePath}/search/mini`,
+          criteria,
+          { signal }
+        ),
+      (workOrders) => dispatch(slice.actions.getWorkOrdersMini({ workOrders }))
+    );
+  };
+export const getSingleWorkOrder =
+  (id: number): AppThunk =>
+  async (dispatch) => {
+    dispatch(slice.actions.setLoadingGet({ loading: true }));
+    const workOrder = await api.get<WorkOrder>(`${basePath}/${id}`);
+    dispatch(slice.actions.getSingleWorkOrder({ workOrder }));
+    dispatch(slice.actions.setLoadingGet({ loading: false }));
+  };
+export const addWorkOrder =
+  (workOrder): AppThunk =>
+  async (dispatch) => {
+    const workOrderResponse = await api.post<WorkOrder>(basePath, workOrder);
+    dispatch(slice.actions.addWorkOrder({ workOrder: workOrderResponse }));
+    if (isUrgent(workOrderResponse))
+      dispatch(slice.actions.incrementUrgentCount());
+    if (
+      (!workOrderResponse.primaryUser &&
+        workOrderResponse.assignedTo.length === 0) ||
+      !workOrderResponse.estimatedStartDate
+    ) {
+      dispatch(
+        addToUnscheduled({
+          workOrder: workOrderResponse
+        })
+      );
+    }
+    const taskBases =
+      workOrder.tasks?.map((task) => {
+        return {
+          ...task.taskBase,
+          options: task.taskBase.options.map((option) => option.label)
+        };
+      }) ?? [];
+    if (taskBases.length) {
+      const tasks = await api.patch<Task[]>(
+        `tasks/work-order/${workOrderResponse.id}`,
+        taskBases,
+        null
+      );
+    }
+    return workOrderResponse;
+  };
+export const editWorkOrder =
+  (id: number, workOrder): AppThunk =>
+  async (dispatch, getState) => {
+    const oldWorkOrder = findWorkOrder(getState().workOrders, id);
+    const workOrderResponse = await api.patch<WorkOrder>(
+      `${basePath}/${id}`,
+      workOrder
+    );
+    dispatch(slice.actions.editWorkOrder({ workOrder: workOrderResponse }));
+    const wasUrgent = isUrgent(oldWorkOrder);
+    const isNowUrgent = isUrgent(workOrderResponse);
+    if (wasUrgent && !isNowUrgent)
+      dispatch(slice.actions.decrementUrgentCount());
+    else if (!wasUrgent && isNowUrgent)
+      dispatch(slice.actions.incrementUrgentCount());
+    if (workOrder.archived) dispatch(slice.actions.deleteWorkOrder({ id }));
+  };
+export const addFilesToWorkOrder =
+  (id: number, files: { id: number }[]): AppThunk =>
+  async (dispatch) => {
+    const response = await api.patch<File[]>(
+      `${basePath}/files/${id}/add`,
+      files
+    );
+    dispatch(slice.actions.addFilesToWorkOrder({ files: response, id }));
+  };
+export const removeFileFromWorkOrder =
+  (workOrderId: number, fileId: number): AppThunk =>
+  async (dispatch) => {
+    const response = await api.deletes<File[]>(
+      `${basePath}/files/${workOrderId}/${fileId}/remove`
+    );
+    dispatch(
+      slice.actions.setFilesForWorkOrder({ files: response, id: workOrderId })
+    );
+  };
+export const changeWorkOrderStatus =
+  (
+    id: number,
+    body: { status: string; feedback?: string; signature?: string }
+  ): AppThunk =>
+  async (dispatch, getState) => {
+    const oldWorkOrder = findWorkOrder(getState().workOrders, id);
+    const workOrderResponse = await api.patch<WorkOrder>(
+      `${basePath}/${id}/change-status`,
+      body
+    );
+    dispatch(slice.actions.editWorkOrder({ workOrder: workOrderResponse }));
+    const wasUrgent = isUrgent(oldWorkOrder);
+    const isNowUrgent = isUrgent(workOrderResponse);
+    if (wasUrgent && !isNowUrgent)
+      dispatch(slice.actions.decrementUrgentCount());
+    else if (!wasUrgent && isNowUrgent)
+      dispatch(slice.actions.incrementUrgentCount());
+  };
+export const deleteWorkOrder =
+  (id: number): AppThunk =>
+  async (dispatch, getState) => {
+    const wasUrgent = isUrgent(findWorkOrder(getState().workOrders, id));
+    const workOrderResponse = await api.deletes<{ success: boolean }>(
+      `${basePath}/${id}`
+    );
+    const { success } = workOrderResponse;
+    if (success) {
+      dispatch(slice.actions.deleteWorkOrder({ id }));
+      if (wasUrgent) dispatch(slice.actions.decrementUrgentCount());
+    }
+  };
+
+export const getWorkOrdersByLocation =
+  (id: number): AppThunk =>
+  async (dispatch) => {
+    const workOrders = await api.get<WorkOrder[]>(`${basePath}/location/${id}`);
+    dispatch(
+      slice.actions.getWorkOrdersByLocation({
+        id,
+        workOrders
+      })
+    );
+  };
+
+export const getWorkOrdersByPart =
+  (id: number): AppThunk =>
+  async (dispatch) => {
+    const workOrders = await api.get<WorkOrder[]>(`${basePath}/part/${id}`);
+    dispatch(
+      slice.actions.getWorkOrdersByPart({
+        id,
+        workOrders
+      })
+    );
+  };
+export interface ReportConfig {
+  cost: boolean;
+  comments: boolean;
+  workOrderHistory: boolean;
+  estimatedTime: boolean;
+  locationAddress: boolean;
+  priority: boolean;
+  workOrderInformation: boolean;
+  relations: boolean;
+  files: boolean;
+  signature: boolean;
+  tasks: boolean;
+}
+
+export interface WorkOrderSendReportDTO {
+  config?: ReportConfig;
+  message?: string;
+  customers: { id: number }[];
+}
+
+export const getPDFReport =
+  (id: number, config?: ReportConfig): AppThunk =>
+  async (dispatch): Promise<void> => {
+    const response = await api.post<Response>(
+      `${basePath}/report/${id}/stream`,
+      config,
+      { raw: true }
+    );
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const match = disposition.match(/filename="?([^";\n]+)"?/);
+    const filename = match ? match[1] : 'Work order report.pdf';
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
+export const sendWorkOrderReport =
+  (id: number, body: WorkOrderSendReportDTO): AppThunk =>
+  async (dispatch): Promise<{ success: boolean; message: string }> => {
+    const res = await api.post<{ success: boolean; message: string }>(
+      `${basePath}/${id}/report/send`,
+      body
+    );
+    return res;
+  };
+
+export const getWorkOrderEvents =
+  (
+    start: Date,
+    end: Date,
+    companyId: number = null,
+    filterFields: FilterField[] = null
+  ): AppThunk =>
+  async (dispatch) => {
+    dispatch(slice.actions.setLoadingGet({ loading: true }));
+    const response = await api.post<
+      CalendarEvent<WorkOrder | PreventiveMaintenance>[]
+    >(`${basePath}/events?companyId=${companyId || ''}`, {
+      start,
+      end,
+      filterFields
+    });
+    dispatch(
+      slice.actions.getEvents({
+        events: response
+      })
+    );
+    dispatch(slice.actions.setLoadingGet({ loading: false }));
+  };
+export const getUrgentWorkOrdersCount = (): AppThunk => async (dispatch) => {
+  const response = await api.get<{ success: boolean; message: string }>(
+    `${basePath}/urgent`
+  );
+  dispatch(
+    slice.actions.getUrgentWorkOrdersCount({
+      count: Number(response.message)
+    })
+  );
+};
+export const clearSingleWorkOrder = (): AppThunk => async (dispatch) => {
+  dispatch(slice.actions.clearSingleWorkOrder({}));
+};
+export const updateWorkOrderInContent = slice.actions.editWorkOrder;
+export default slice;

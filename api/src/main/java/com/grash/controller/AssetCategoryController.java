@@ -1,0 +1,102 @@
+package com.grash.controller;
+
+import com.grash.dto.CategoryPatchDTO;
+import com.grash.dto.SuccessResponse;
+import com.grash.exception.CustomException;
+import com.grash.model.AssetCategory;
+import com.grash.model.User;
+import com.grash.model.enums.PermissionEntity;
+import com.grash.model.enums.RoleType;
+import com.grash.service.AssetCategoryService;
+import com.grash.service.UserService;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+
+import java.util.Collection;
+import java.util.Optional;
+
+@RestController
+@RequestMapping("/asset-categories")
+@Tag(name = "Asset Categories", description = "Operations on asset categories")
+@RequiredArgsConstructor
+public class AssetCategoryController {
+
+    private final AssetCategoryService assetCategoryService;
+    private final UserService userService;
+
+    @GetMapping("")
+    @PreAuthorize("permitAll()")
+    public Collection<AssetCategory> getAll(HttpServletRequest req) {
+        User user = userService.whoami(req);
+        if (user.getRole().getRoleType().equals(RoleType.ROLE_CLIENT)) {
+            if (user.getRole().getViewPermissions().contains(PermissionEntity.CATEGORIES)) {
+                return assetCategoryService.findByCompanySettings(user.getCompany().getCompanySettings().getId());
+            } else throw new CustomException("Access Denied", HttpStatus.FORBIDDEN);
+        } else return assetCategoryService.getAll();
+    }
+
+    @GetMapping("/{id}")
+    @PreAuthorize("permitAll()")
+    public AssetCategory getById(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<AssetCategory> optionalAssetCategory = assetCategoryService.findById(id);
+        if (optionalAssetCategory.isPresent()) {
+            if (!optionalAssetCategory.get().canBeViewedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            return assetCategoryService.findById(id).get();
+        } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    @PostMapping("")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public AssetCategory create(@Parameter(description = "Asset category to create") @Valid @RequestBody AssetCategory assetCategoryReq,
+                                HttpServletRequest req) {
+        User user = userService.whoami(req);
+        if (user.getRole().getCreatePermissions().contains(PermissionEntity.CATEGORIES)) {
+            return assetCategoryService.create(assetCategoryReq, user);
+        } else throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+    }
+
+    @PatchMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public AssetCategory patch(@Parameter(description = "Asset category fields to update") @Valid @RequestBody CategoryPatchDTO assetCategory,
+                               @PathVariable("id") Long id,
+                               HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<AssetCategory> optionalAssetCategory = assetCategoryService.findById(id);
+        if (optionalAssetCategory.isPresent()) {
+            if (!optionalAssetCategory.get().canBeEditedBy(user))
+                throw new CustomException("Access denied", HttpStatus.FORBIDDEN);
+            return assetCategoryService.update(id, assetCategory);
+        } else {
+            throw new CustomException("Category not found", HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public ResponseEntity<SuccessResponse> delete(@PathVariable("id") Long id, HttpServletRequest req) {
+        User user = userService.whoami(req);
+
+        Optional<AssetCategory> optionalAssetCategory = assetCategoryService.findById(id);
+        if (optionalAssetCategory.isPresent()) {
+            if (optionalAssetCategory.get().canBeDeletedBy(user)) {
+                assetCategoryService.delete(id);
+                return new ResponseEntity<>(new SuccessResponse(true, "Deleted successfully"),
+                        HttpStatus.OK);
+            } else throw new CustomException("Forbidden", HttpStatus.FORBIDDEN);
+        } else throw new CustomException("AssetCategory not found", HttpStatus.NOT_FOUND);
+    }
+
+}
+
+

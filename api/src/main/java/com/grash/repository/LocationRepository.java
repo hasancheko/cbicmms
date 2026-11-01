@@ -1,0 +1,51 @@
+package com.grash.repository;
+
+import com.grash.model.Location;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.repository.EntityGraph;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+public interface LocationRepository extends JpaRepository<Location, Long>, JpaSpecificationExecutor<Location> {
+    Collection<Location> findByCompany_Id(Long id);
+
+    List<Location> findByCompany_Id(Long id, Pageable pageable);
+
+    @EntityGraph(attributePaths = {
+            "parentLocation", "image"
+    })
+    Page<Location> findByParentLocation_Id(Long id, Pageable pageable);
+
+    @Query("SELECT l FROM Location l " +
+            "LEFT JOIN FETCH l.parentLocation " +
+            "LEFT JOIN FETCH l.image " +
+            "WHERE l.company.id = :companyId")
+    Page<Location> findByCompanyForExport(@Param("companyId") Long companyId, Pageable pageable);
+
+    List<Location> findByNameIgnoreCaseAndCompany_Id(String locationName, Long companyId);
+
+    Optional<Location> findByIdAndCompany_Id(Long id, Long companyId);
+
+    List<Location> findByIdInAndCompany_Id(List<Long> ids, Long companyId);
+
+    int countByParentLocation_Id(Long locationId);
+
+    void deleteByCompany_IdAndIsDemoTrue(Long companyId);
+
+    @Query("SELECT CASE WHEN COUNT(l) > :threshold THEN true ELSE false END " +
+            "FROM Location l WHERE l.company.id = :companyId")
+    boolean hasMoreThan(@Param("companyId") Long companyId, @Param("threshold") Long threshold);
+
+    @EntityGraph(attributePaths = {
+            "parentLocation", "image"
+    })
+    Page<Location> findByCompany_IdAndParentLocationIsNull(Long id, Pageable pageable);
+}

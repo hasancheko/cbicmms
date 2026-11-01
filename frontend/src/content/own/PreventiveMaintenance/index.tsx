@@ -1,0 +1,941 @@
+import SplitButton from '../components/SplitButton';
+import { Helmet } from 'react-helmet-async';
+import {
+  Box,
+  Button,
+  Card,
+  CircularProgress,
+  debounce,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Drawer,
+  Grid,
+  IconButton,
+  Menu,
+  MenuItem,
+  Stack,
+  Typography
+} from '@mui/material';
+import { useTranslation } from 'react-i18next';
+import * as React from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
+import { TitleContext } from '../../../contexts/TitleContext';
+import {
+  addPreventiveMaintenance,
+  clearSinglePM,
+  deletePreventiveMaintenance,
+  editPreventiveMaintenance,
+  getPreventiveMaintenances,
+  getSinglePreventiveMaintenance,
+  patchSchedule
+} from '../../../slices/preventiveMaintenance';
+import { useDispatch, useSelector } from '../../../store';
+import ConfirmDialog from '../components/ConfirmDialog';
+import CustomDatagrid2, {
+  CustomDatagridColumn2
+} from '../components/CustomDatagrid2';
+import {
+  FilterField,
+  SearchCriteria,
+  SearchOperator,
+  SortDirection
+} from '../../../models/owns/page';
+import { loadFilterFields, saveFilterFields } from '../../../utils/filter';
+import AddTwoToneIcon from '@mui/icons-material/AddTwoTone';
+import Form from '../components/form';
+import * as Yup from 'yup';
+import { IField } from '../type';
+import PMDetails from './PMDetails';
+import { useNavigate, useParams } from 'react-router-dom';
+import { isNumeric } from '../../../utils/validators';
+import { CustomSnackBarContext } from '../../../contexts/CustomSnackBarContext';
+import PriorityWrapper from '../components/PriorityWrapper';
+import {
+  formatSelect,
+  formatSelectMultiple,
+  formatCustomFields
+} from '../../../utils/formatters';
+import useAuth from '../../../hooks/useAuth';
+import { CompanySettingsContext } from '../../../contexts/CompanySettingsContext';
+import { getWOBaseFields, getWOBaseValues } from '../../../utils/woBase';
+import { PermissionEntity } from '../../../models/owns/role';
+import { getCustomFields } from '../../../slices/customField';
+import { CustomFieldEntityType } from '../../../models/owns/customField';
+import { getCustomFieldsRequiredShape } from '../type';
+import PermissionErrorMessage from '../components/PermissionErrorMessage';
+import NoRowsMessageWrapper from '../components/NoRowsMessageWrapper';
+import {
+  getImageAndFiles,
+  handleFileUpload,
+  getNextOccurence,
+  onSearchQueryChange
+} from '../../../utils/overall';
+import { UserMiniDTO } from '../../../models/user';
+import UserAvatars from '../components/UserAvatars';
+import PreventiveMaintenance from '../../../models/owns/preventiveMaintenance';
+import Category from '../../../models/owns/category';
+import { LocationMiniDTO } from '../../../models/owns/location';
+import { AssetMiniDTO } from '../../../models/owns/asset';
+import { patchTasksOfPreventiveMaintenance } from '../../../slices/task';
+import { createColumnHelper } from '@tanstack/react-table';
+import useTableState from '../../../hooks/useTableState';
+import CompanyFilter from '../WorkOrders/Filters/CompanyFilter';
+import EnumFilter from '../WorkOrders/Filters/EnumFilter';
+import BusinessTwoToneIcon from '@mui/icons-material/BusinessTwoTone';
+import SignalCellularAltTwoToneIcon from '@mui/icons-material/SignalCellularAltTwoTone';
+import SearchInput from '../components/SearchInput';
+import WorkOrder from '../../../models/owns/workOrder';
+import { getWeekdays } from '../../../utils/dates';
+import {
+  getDateLocale,
+  getSupportedLanguage,
+  supportedLanguages
+} from '../../../i18n/i18n';
+import i18n from 'i18next';
+import Schedule from '../../../models/owns/schedule';
+import MoreVertTwoToneIcon from '@mui/icons-material/MoreVertTwoTone';
+import { useExport } from '../../../hooks/useExport';
+import { PlanFeature } from '../../../models/owns/subscriptionPlan';
+import { getErrorMessage } from '../../../utils/api';
+import { getPreventiveMaintenanceUrl } from '../../../utils/urlPaths';
+import useDateLocale from '../../../hooks/useDateLocale';
+
+const QUERY_SEARCH_FIELDS = new Set<keyof PreventiveMaintenance>([
+  'title',
+  'description',
+  'name'
+]);
+
+const FILTERS_STORAGE_KEY = 'pm_filters';
+const DEFAULT_FILTER_FIELDS: FilterField[] = [
+  {
+    field: 'priority',
+    operation: 'in',
+    values: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+    value: '',
+    enumName: 'PRIORITY'
+  }
+];
+
+const getInitialFilterFields = (): FilterField[] =>
+  loadFilterFields(FILTERS_STORAGE_KEY, DEFAULT_FILTER_FIELDS);
+
+function PMs() {
+  const { t }: { t: any } = useTranslation();
+  const { setTitle } = useContext(TitleContext);
+  const [openAddModal, setOpenAddModal] = useState<boolean>(false);
+  const [openDiscardDialog, setOpenDiscardDialog] = useState<boolean>(false);
+  const [isFormDirty, setIsFormDirty] = useState<boolean>(false);
+  const [copyPmData, setCopyPmData] = useState<PreventiveMaintenance | null>(
+    null
+  );
+  const [openUpdateModal, setOpenUpdateModal] = useState<boolean>(false);
+  const [openDrawer, setOpenDrawer] = useState<boolean>(false);
+  const getLanguage = i18n.language;
+  const dateLocale = useDateLocale();
+  const {
+    companySettings,
+    hasViewPermission,
+    hasCreatePermission,
+    getFilteredFields,
+    hasViewOtherPermission,
+    hasFeature,
+    user
+  } = useAuth();
+  const [currentPM, setCurrentPM] = useState<PreventiveMaintenance>();
+  const { tasksByPreventiveMaintenance } = useSelector((state) => state.tasks);
+  const tasks = tasksByPreventiveMaintenance[currentPM?.id] ?? [];
+  const { uploadFiles, getWOFieldsAndShapes } = useContext(
+    CompanySettingsContext
+  );
+  const { getFormattedDate } = useContext(CompanySettingsContext);
+  const { preventiveMaintenanceId } = useParams();
+  const dispatch = useDispatch();
+  const [openDelete, setOpenDelete] = useState<boolean>(false);
+  const { preventiveMaintenances, loadingGet, singlePreventiveMaintenance } =
+    useSelector((state) => state.preventiveMaintenances);
+  const { customFields } = useSelector((state) => state.customFields);
+  const [openDrawerFromUrl, setOpenDrawerFromUrl] = useState<boolean>(false);
+  const [criteria, setCriteria] = useState<SearchCriteria>({
+    filterFields: getInitialFilterFields(),
+    pageSize: 10,
+    pageNum: 0,
+    direction: 'DESC'
+  });
+
+  // Mapping for column fields to API field names for sorting
+  const fieldMapping: Record<string, string> = {
+    customId: 'customId',
+    name: 'name',
+    title: 'title',
+    priority: 'priority',
+    description: 'description',
+    next: 'schedule.startsOn',
+    primaryUser: 'primaryUser.firstName',
+    assignedTo: 'assignedTo',
+    location: 'location.name',
+    category: 'category.name',
+    asset: 'asset.name'
+  };
+
+  // Use the table state hook for TanStack Table
+  const {
+    sorting,
+    setSorting,
+    pagination,
+    setPagination,
+    columnOrder,
+    setColumnOrder,
+    columnSizing,
+    setColumnSizing,
+    columnVisibility,
+    setColumnVisibility,
+    pinnedColumns,
+    setPinnedColumns
+  } = useTableState({
+    prefix: 'pm',
+    initialSorting: [{ id: 'next', desc: true }],
+    initialPagination: {
+      pageSize: criteria.pageSize,
+      pageIndex: criteria.pageNum
+    },
+    setCriteria,
+    fieldMapping
+  });
+  const { showSnackBar } = useContext(CustomSnackBarContext);
+  const { exportEntity, loadingExport } = useExport();
+  const navigate = useNavigate();
+  const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
+  const openMenu = Boolean(anchorEl);
+  const basedOnArray: {
+    label: string;
+    value: Schedule['recurrenceBasedOn'];
+  }[] = [
+    { label: t('scheduled_date'), value: 'SCHEDULED_DATE' },
+    { label: t('completed_on'), value: 'COMPLETED_DATE' }
+  ];
+  const recurrenceTypes: {
+    label: string;
+    value: Schedule['recurrenceType'];
+  }[] = [
+    { label: t('days'), value: 'DAILY' },
+    { label: t('weeks'), value: 'WEEKLY' },
+    { label: t('months'), value: 'MONTHLY' },
+    { label: t('years'), value: 'YEARLY' }
+  ];
+  useEffect(() => {
+    setTitle(t('preventive_maintenance'));
+  }, []);
+  useEffect(() => {
+    if (preventiveMaintenanceId && isNumeric(preventiveMaintenanceId)) {
+      dispatch(getSinglePreventiveMaintenance(Number(preventiveMaintenanceId)));
+    }
+  }, [preventiveMaintenanceId]);
+
+  useEffect(() => {
+    if (hasViewPermission(PermissionEntity.PREVENTIVE_MAINTENANCES))
+      dispatch(getPreventiveMaintenances(criteria));
+  }, [criteria]);
+
+  useEffect(() => {
+    if ((openAddModal || openUpdateModal) && !customFields.length) {
+      dispatch(getCustomFields());
+    }
+  }, [openAddModal, openUpdateModal]);
+
+  //see changes in ui on edit
+  useEffect(() => {
+    if (singlePreventiveMaintenance || preventiveMaintenances.content.length) {
+      const currentInContent = preventiveMaintenances.content.find(
+        (preventiveMaintenance) => preventiveMaintenance.id === currentPM?.id
+      );
+      const updatedPreventiveMaintenance =
+        currentInContent ?? singlePreventiveMaintenance;
+      if (updatedPreventiveMaintenance) {
+        if (openDrawerFromUrl) {
+          setCurrentPM(updatedPreventiveMaintenance);
+        } else {
+          handleOpenDrawer(updatedPreventiveMaintenance);
+          setOpenDrawerFromUrl(true);
+        }
+      }
+    }
+    return () => {
+      dispatch(clearSinglePM());
+    };
+  }, [singlePreventiveMaintenance, preventiveMaintenances]);
+
+  const handleOpenDrawer = (preventiveMaintenance: PreventiveMaintenance) => {
+    setCurrentPM(preventiveMaintenance);
+    window.history.replaceState(
+      null,
+      'PreventiveMaintenance details',
+      `/app/preventive-maintenances/${preventiveMaintenance.id}`
+    );
+    setOpenDrawer(true);
+  };
+
+  const handleDelete = (id: number) => {
+    handleCloseDetails();
+    dispatch(deletePreventiveMaintenance(id))
+      .then(onDeleteSuccess)
+      .catch(onDeleteFailure);
+    setOpenDelete(false);
+  };
+  const handleOpenUpdate = () => {
+    setOpenUpdateModal(true);
+  };
+  const handleCopyPm = (preventiveMaintenance: PreventiveMaintenance) => {
+    setCopyPmData(preventiveMaintenance);
+    setOpenAddModal(true);
+  };
+  const onCreationSuccess = (createdPM?: PreventiveMaintenance) => {
+    setOpenAddModal(false);
+    showSnackBar(t('wo_schedule_success'), 'success');
+    if (copyPmData && createdPM) {
+      navigate(getPreventiveMaintenanceUrl(createdPM.id));
+    }
+    setCopyPmData(null);
+  };
+  const onCreationFailure = (err) =>
+    showSnackBar(getErrorMessage(err, t('wo_schedule_failure')), 'error');
+  const onEditSuccess = () => {
+    setOpenUpdateModal(false);
+    showSnackBar(t('changes_saved_success'), 'success');
+  };
+  const onEditFailure = (err) =>
+    showSnackBar(t('wo_trigger_edit_failure'), 'error');
+  const onDeleteSuccess = () => {
+    showSnackBar(t('wo_trigger_delete_success'), 'success');
+  };
+  const onDeleteFailure = (err) =>
+    showSnackBar(t('wo_trigger_delete_failure'), 'error');
+
+  const handleOpenDetails = (id: number) => {
+    const foundPreventiveMaintenance = preventiveMaintenances.content.find(
+      (preventiveMaintenance) => preventiveMaintenance.id === id
+    );
+    if (foundPreventiveMaintenance) {
+      handleOpenDrawer(foundPreventiveMaintenance);
+    }
+  };
+  const handleCloseDetails = () => {
+    window.history.replaceState(
+      null,
+      'Preventive',
+      `/app/preventive-maintenances`
+    );
+    setOpenDrawer(false);
+  };
+  const handleOpenMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    setAnchorEl(event.currentTarget);
+  };
+  const handleCloseMenu = () => {
+    setAnchorEl(null);
+  };
+  const onQueryChange = (event) => {
+    onSearchQueryChange<PreventiveMaintenance>(event, criteria, setCriteria, [
+      'title',
+      'description',
+      'name',
+      'customFieldValues.value'
+    ]);
+  };
+  const onFilterChange = (newFilters: FilterField[]) => {
+    const newCriteria = { ...criteria };
+    newCriteria.filterFields = newFilters;
+    setCriteria(newCriteria);
+    saveFilterFields(FILTERS_STORAGE_KEY, newFilters, QUERY_SEARCH_FIELDS);
+  };
+  const debouncedQueryChange = useMemo(() => debounce(onQueryChange, 1300), []);
+
+  const getPMFormValues = (
+    entity: PreventiveMaintenance | null | undefined
+  ) => ({
+    ...entity,
+    ...getWOBaseValues(t, entity),
+    startsOn: entity?.schedule?.startsOn,
+    endsOn: entity?.schedule?.endsOn,
+    recurrenceBasedOn: entity?.schedule?.recurrenceBasedOn
+      ? basedOnArray.find(
+          ({ value }) => value === entity.schedule.recurrenceBasedOn
+        )
+      : null,
+    recurrenceType: entity?.schedule?.recurrenceType
+      ? recurrenceTypes.find(
+          ({ value }) => value === entity.schedule.recurrenceType
+        )
+      : null,
+    daysOfWeek: entity?.schedule?.daysOfWeek?.map((dayOfWeek) => ({
+      label: getWeekdays(dateLocale).find((day, index) => index === dayOfWeek),
+      value: dayOfWeek
+    })),
+    frequency: Number(entity?.schedule?.frequency),
+    dueDateDelay: entity?.schedule?.dueDateDelay,
+    tasks
+  });
+  const formatValues = (values) => {
+    const newValues = { ...values };
+    newValues.primaryUser = formatSelect(newValues.primaryUser);
+    newValues.location = formatSelect(newValues.location);
+    newValues.team = formatSelect(newValues.team);
+    newValues.asset = formatSelect(newValues.asset);
+    newValues.assignedTo = formatSelectMultiple(newValues.assignedTo);
+    newValues.priority = newValues.priority?.value;
+    newValues.category = formatSelect(newValues.category);
+    newValues.daysOfWeek = newValues.daysOfWeek?.map((day) => day.value) ?? [];
+    newValues.recurrenceBasedOn = newValues.recurrenceBasedOn?.value;
+    newValues.recurrenceType = newValues.recurrenceType?.value;
+    newValues.requiredSignature = Array.isArray(newValues.requiredSignature)
+      ? newValues?.requiredSignature.includes('on')
+      : newValues.requiredSignature;
+    return formatCustomFields(newValues);
+  };
+
+  const columnHelper = createColumnHelper<PreventiveMaintenance>();
+
+  const columns: CustomDatagridColumn2<PreventiveMaintenance>[] = [
+    columnHelper.accessor('customId', {
+      id: 'customId',
+      header: () => t('id'),
+      cell: (info) => info.getValue() || '',
+      size: 80
+    }),
+    columnHelper.accessor('name', {
+      id: 'name',
+      header: () => t('name'),
+      cell: (info) => <Box sx={{ fontWeight: 'bold' }}>{info.getValue()}</Box>,
+      size: 150
+    }),
+    columnHelper.accessor('title', {
+      id: 'title',
+      header: () => t('wo_title'),
+      cell: (info) => <Box sx={{ fontWeight: 'bold' }}>{info.getValue()}</Box>,
+      size: 150
+    }),
+    columnHelper.accessor('priority', {
+      id: 'priority',
+      header: () => t('priority'),
+      cell: (info) => <PriorityWrapper priority={info.getValue()} />,
+      size: 150
+    }),
+    columnHelper.accessor('description', {
+      id: 'description',
+      header: () => t('description'),
+      cell: (info) => info.getValue() || '',
+      size: 300
+    }),
+    columnHelper.accessor('schedule', {
+      id: 'next',
+      header: () => t('next_wo'),
+      cell: (info) => getFormattedDate(info.row.original.nextWorkOrderDate),
+      size: 150
+    }),
+    columnHelper.accessor('primaryUser', {
+      id: 'primaryUser',
+      header: () => t('worker'),
+      cell: (info) =>
+        info.getValue() ? <UserAvatars users={[info.getValue()]} /> : null,
+      size: 170
+    }),
+    columnHelper.accessor('assignedTo', {
+      id: 'assignedTo',
+      header: () => t('assigned_to'),
+      cell: (info) => <UserAvatars users={info.getValue()} />,
+      size: 150
+    }),
+    columnHelper.accessor((row) => row.location?.name, {
+      id: 'location',
+      header: () => t('location_name'),
+      cell: (info) => info.getValue() || '',
+      size: 150,
+      meta: {
+        uiConfigKey: 'locations'
+      }
+    }),
+    columnHelper.accessor((row) => row.category?.name, {
+      id: 'category',
+      header: () => t('category'),
+      cell: (info) => info.getValue() || '',
+      size: 150
+    }),
+    columnHelper.accessor((row) => row.asset?.name, {
+      id: 'asset',
+      header: () => t('asset_name'),
+      cell: (info) => info.getValue() || '',
+      size: 150
+    })
+  ];
+
+  const defaultFields: Array<IField> = [
+    {
+      name: 'triggerConfiguration',
+      type: 'titleGroupField',
+      label: t('trigger_configuration')
+    },
+    {
+      name: 'name',
+      type: 'text',
+      label: t('trigger_name'),
+      placeholder: t('enter_trigger_name'),
+      required: true
+    },
+    {
+      name: 'recurrenceBasedOn',
+      type: 'select',
+      label: t('based_on'),
+      items: basedOnArray,
+      required: true,
+      relatedFields: [
+        {
+          field: 'daysOfWeek',
+          value: 'COMPLETED_DATE',
+          hide: true
+        }
+      ]
+    },
+    {
+      name: 'startsOn',
+      type: 'date',
+      label: t('starts_on'),
+      required: true,
+      midWidth: true
+    },
+    {
+      name: 'endsOn',
+      type: 'date',
+      label: t('ends_on'),
+      midWidth: true
+    },
+    {
+      name: 'frequency',
+      type: 'number',
+      label: t('frequency'),
+      required: true,
+      midWidth: true
+    },
+    {
+      name: 'recurrenceType',
+      type: 'select',
+      label: '',
+      items: recurrenceTypes,
+      required: true,
+      midWidth: true,
+      relatedFields: ['DAILY', 'MONTHLY', 'YEARLY'].map((item) => ({
+        field: 'daysOfWeek',
+        value: item,
+        hide: true
+      }))
+    },
+    {
+      name: 'daysOfWeek',
+      type: 'select',
+      multiple: true,
+      label: t('on'),
+      items: getWeekdays(dateLocale).map((day, index) => ({
+        label: day,
+        value: index
+      }))
+    },
+    {
+      name: 'titleGroup',
+      type: 'titleGroupField',
+      label: 'wo_configuration'
+    },
+    ...getWOBaseFields(
+      t,
+      customFields.filter((cf) => cf.copyOnRepeat),
+      { delay: true }
+    ),
+    {
+      name: 'requiredSignature',
+      type: 'switch',
+      label: t('requires_signature')
+    },
+    {
+      name: 'tasks',
+      type: 'select',
+      type2: 'task',
+      label: t('tasks'),
+      placeholder: t('select_tasks')
+    }
+  ];
+  const defaultShape = {
+    name: Yup.string().required(t('required_trigger_name')),
+    title: Yup.string().required(t('required_wo_title')),
+    frequency: Yup.number()
+      .required(t('required_frequency'))
+      .test(
+        'test-frequency', // this is used internally by yup
+        t('invalid_frequency'),
+        (value) => value > 0
+      ),
+    daysOfWeek: Yup.array().test(
+      'test-days-of-week',
+      t('required_days_of_week'),
+      function (value) {
+        const { recurrenceBasedOn, recurrenceType } = this.parent;
+        if (
+          recurrenceBasedOn?.value === 'SCHEDULED_DATE' &&
+          recurrenceType?.value === 'WEEKLY'
+        ) {
+          return value && value.length > 0;
+        }
+        return true;
+      }
+    ),
+    ...getCustomFieldsRequiredShape(
+      customFields.filter((cf) => cf.copyOnRepeat),
+      CustomFieldEntityType.WORK_ORDER,
+      t
+    )
+  };
+  const getFieldsAndShapes = (): [Array<IField>, { [key: string]: any }] => {
+    const fieldsAndShapes = getWOFieldsAndShapes(defaultFields, defaultShape);
+    return [
+      fieldsAndShapes[0].filter((field) => field.name !== 'estimatedStartDate'),
+      fieldsAndShapes[1]
+    ];
+  };
+  const renderAddModal = () => (
+    <Dialog
+      fullWidth
+      maxWidth="md"
+      open={openAddModal}
+      onClose={() => {
+        if (isFormDirty) {
+          setOpenDiscardDialog(true);
+        } else {
+          setOpenAddModal(false);
+          setCopyPmData(null);
+        }
+      }}
+    >
+      <DialogTitle
+        sx={{
+          p: 3
+        }}
+      >
+        <Typography variant="h4" gutterBottom>
+          {copyPmData ? t('copy_pm') : t('schedule_wo')}
+        </Typography>
+        <Typography variant="subtitle2">
+          {t('schedule_wo_description')}
+        </Typography>
+      </DialogTitle>
+      <DialogContent
+        dividers
+        sx={{
+          p: 3
+        }}
+      >
+        <Box>
+          <Form
+            fields={getFieldsAndShapes()[0]}
+            validation={Yup.object().shape(getFieldsAndShapes()[1])}
+            submitText={t('add')}
+            values={
+              copyPmData
+                ? { ...getPMFormValues(copyPmData), id: null }
+                : {
+                    startsOn: null,
+                    endsOn: null,
+                    dueDate: null,
+                    recurrenceBasedOn: basedOnArray[0],
+                    recurrenceType: recurrenceTypes[0]
+                  }
+            }
+            onChange={() => setIsFormDirty(true)}
+            onSubmit={async (values) => {
+              setIsFormDirty(false);
+              let formattedValues = formatValues(values);
+              try {
+                const uploadedFiles = await uploadFiles(
+                  formattedValues.files,
+                  formattedValues.image
+                );
+
+                const imageAndFiles = getImageAndFiles(uploadedFiles);
+                formattedValues = {
+                  ...formattedValues,
+                  image: imageAndFiles.image,
+                  files: imageAndFiles.files
+                };
+
+                const createdPM = await dispatch(
+                  addPreventiveMaintenance(formattedValues)
+                );
+                onCreationSuccess(createdPM);
+              } catch (err) {
+                onCreationFailure(err);
+                throw err;
+              }
+            }}
+          />
+        </Box>
+      </DialogContent>
+      <ConfirmDialog
+        open={openDiscardDialog}
+        onCancel={() => setOpenDiscardDialog(false)}
+        onConfirm={() => {
+          setOpenDiscardDialog(false);
+          setOpenAddModal(false);
+          setCopyPmData(null);
+          setIsFormDirty(false);
+        }}
+        confirmText={t('discard_changes')}
+        question={t('discard_changes_question')}
+      />
+    </Dialog>
+  );
+  const renderUpdateModal = () => (
+    <Dialog
+      fullWidth
+      maxWidth="md"
+      open={openUpdateModal}
+      onClose={() => setOpenUpdateModal(false)}
+    >
+      <DialogTitle
+        sx={{
+          p: 3
+        }}
+      >
+        <Typography variant="h4" gutterBottom>
+          {t('edit_wo_trigger')}
+        </Typography>
+        <Typography variant="subtitle2">
+          {t('edit_wo_trigger_description')}
+        </Typography>
+      </DialogTitle>
+      <DialogContent
+        dividers
+        sx={{
+          p: 3
+        }}
+      >
+        <Box>
+          <Form
+            fields={getFieldsAndShapes()[0]}
+            validation={Yup.object().shape(getFieldsAndShapes()[1])}
+            submitText={t('save')}
+            values={getPMFormValues(currentPM)}
+            onChange={({ field, e }) => {}}
+            onSubmit={async (values) => {
+              try {
+                let formattedValues = formatValues(values);
+
+                const imageAndFiles = await handleFileUpload(
+                  {
+                    files: formattedValues.files,
+                    image: formattedValues.image
+                  },
+                  uploadFiles
+                );
+
+                formattedValues = {
+                  ...formattedValues,
+                  image: imageAndFiles.image,
+                  files: imageAndFiles.files
+                };
+
+                await dispatch(
+                  patchTasksOfPreventiveMaintenance(
+                    currentPM?.id,
+                    formattedValues.tasks.map((task) => ({
+                      ...task.taskBase,
+                      options: task.taskBase.options.map(
+                        (option) => option.label
+                      )
+                    }))
+                  )
+                );
+
+                await dispatch(
+                  editPreventiveMaintenance(currentPM?.id, formattedValues)
+                );
+
+                await dispatch(
+                  patchSchedule(currentPM.schedule.id, currentPM.id, {
+                    ...currentPM.schedule,
+                    ...formattedValues
+                  })
+                );
+                if (hasViewPermission(PermissionEntity.PREVENTIVE_MAINTENANCES))
+                  dispatch(getPreventiveMaintenances(criteria));
+                onEditSuccess();
+              } catch (err) {
+                onEditFailure(err);
+                throw err;
+              }
+            }}
+          />
+        </Box>
+      </DialogContent>
+    </Dialog>
+  );
+  if (hasViewPermission(PermissionEntity.PREVENTIVE_MAINTENANCES))
+    return (
+      <>
+        <Helmet>
+          <title>{t('preventive_maintenance')}</title>
+        </Helmet>
+        {renderAddModal()}
+        {renderUpdateModal()}
+        <Stack
+          justifyContent="center"
+          alignItems="stretch"
+          spacing={1}
+          paddingX={4}
+        >
+          <Stack direction={'row'} alignSelf={'flex-end'} spacing={1} mt={1}>
+            <IconButton onClick={handleOpenMenu} color="primary">
+              <MoreVertTwoToneIcon />
+            </IconButton>
+            {hasCreatePermission(PermissionEntity.PREVENTIVE_MAINTENANCES) && (
+              <SplitButton
+                label={t('create_trigger')}
+                startIcon={<AddTwoToneIcon />}
+                onMainClick={() => setOpenAddModal(true)}
+                sx={{ mt: 1, alignSelf: 'flex-end' }}
+                menuItems={
+                  hasViewPermission(PermissionEntity.SETTINGS) &&
+                  hasFeature(PlanFeature.IMPORT_CSV)
+                    ? [
+                        {
+                          label: t('import_from_spreadsheet'),
+                          onClick: () =>
+                            navigate('/app/imports/preventive-maintenances')
+                        }
+                      ]
+                    : []
+                }
+              />
+            )}
+          </Stack>
+          <Box>
+            <Card
+              sx={{
+                py: 2,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}
+            >
+              <Stack
+                sx={{ ml: 1, mb: 1 }}
+                direction="row"
+                spacing={1}
+                justifyContent={'flex-start'}
+                width={'95%'}
+              >
+                <EnumFilter
+                  filterFields={criteria.filterFields}
+                  onChange={onFilterChange}
+                  completeOptions={['NONE', 'LOW', 'MEDIUM', 'HIGH']}
+                  fieldName="priority"
+                  icon={<SignalCellularAltTwoToneIcon />}
+                />
+                {user?.superAccountRelations?.length > 0 && (
+                  <CompanyFilter
+                    filterFields={criteria.filterFields}
+                    onChange={onFilterChange}
+                    superAccountRelations={user.superAccountRelations}
+                    icon={<BusinessTwoToneIcon />}
+                  />
+                )}
+                <SearchInput onChange={debouncedQueryChange} />
+              </Stack>
+              <Box sx={{ width: '95%' }}>
+                <CustomDatagrid2
+                  columns={columns}
+                  data={preventiveMaintenances.content}
+                  loading={loadingGet}
+                  pagination={pagination}
+                  onPaginationChange={setPagination}
+                  totalRows={preventiveMaintenances.totalElements}
+                  pageSizeOptions={[10, 20, 50]}
+                  sorting={sorting}
+                  onSortingChange={setSorting}
+                  columnOrder={columnOrder}
+                  onColumnOrderChange={setColumnOrder}
+                  columnSizing={columnSizing}
+                  onColumnSizingChange={setColumnSizing}
+                  columnVisibility={columnVisibility}
+                  onColumnVisibilityChange={setColumnVisibility}
+                  onRowClick={(row) => handleOpenDetails(row.id)}
+                  noRowsMessage={t('noRows.pm.message')}
+                  noRowsAction={t('noRows.pm.action')}
+                  enableColumnReordering
+                  enableColumnResizing
+                  pinnedColumns={pinnedColumns}
+                  onPinnedColumnsChange={setPinnedColumns}
+                />
+              </Box>
+            </Card>
+          </Box>
+        </Stack>
+        <Drawer
+          anchor="right"
+          open={openDrawer}
+          onClose={handleCloseDetails}
+          PaperProps={{
+            sx: { width: { xs: '90%', sm: '70%', md: '50%' } }
+          }}
+        >
+          <PMDetails
+            onClose={handleCloseDetails}
+            preventiveMaintenance={currentPM}
+            handleOpenUpdate={handleOpenUpdate}
+            handleOpenDelete={() => setOpenDelete(true)}
+            onCopy={handleCopyPm}
+            tasks={tasks}
+          />
+        </Drawer>
+        <ConfirmDialog
+          open={openDelete}
+          onCancel={() => {
+            setOpenDelete(false);
+            setOpenDrawer(true);
+          }}
+          onConfirm={() => handleDelete(currentPM?.id)}
+          confirmText={t('to_delete')}
+          question={t('confirm_delete_pm')}
+        />
+        <Menu
+          id="basic-menu"
+          anchorEl={anchorEl}
+          open={openMenu}
+          onClose={handleCloseMenu}
+          MenuListProps={{
+            'aria-labelledby': 'basic-button'
+          }}
+        >
+          {hasViewOtherPermission(PermissionEntity.PREVENTIVE_MAINTENANCES) && (
+            <MenuItem
+              disabled={loadingExport['preventive-maintenances']}
+              onClick={async () => {
+                try {
+                  await exportEntity('preventive-maintenances');
+                } catch (error) {
+                  showSnackBar(t('Export failed'), 'error');
+                }
+                handleCloseMenu();
+              }}
+            >
+              <Stack spacing={2} direction="row">
+                {loadingExport['preventive-maintenances'] && (
+                  <CircularProgress size="1rem" />
+                )}
+                <Typography>{t('to_export')}</Typography>
+              </Stack>
+            </MenuItem>
+          )}
+        </Menu>
+      </>
+    );
+  else return <PermissionErrorMessage message={'no_access_pm'} />;
+}
+
+export default PMs;

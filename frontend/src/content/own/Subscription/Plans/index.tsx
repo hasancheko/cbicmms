@@ -1,0 +1,516 @@
+import { Helmet } from 'react-helmet-async';
+import PersonTwoToneIcon from '@mui/icons-material/PersonTwoTone';
+import { randomInt } from '../../../../utils/generators';
+import {
+  Box,
+  Button,
+  Card,
+  CircularProgress,
+  FormControlLabel,
+  Grid,
+  Link,
+  Radio,
+  RadioGroup,
+  Slider,
+  Stack,
+  Typography,
+  useTheme
+} from '@mui/material';
+import { Trans, useTranslation } from 'react-i18next';
+import { useContext, useEffect, useRef, useState } from 'react';
+import PlanFeatures from './PlanFeatures';
+import { TitleContext } from '../../../../contexts/TitleContext';
+import { useDispatch, useSelector } from '../../../../store';
+import { getSubscriptionPlans } from '../../../../slices/subscriptionPlan';
+import useAuth from '../../../../hooks/useAuth';
+import PermissionErrorMessage from '../../components/PermissionErrorMessage';
+import { CustomSnackBarContext } from '../../../../contexts/CustomSnackBarContext';
+import { SubscriptionPlan } from '../../../../models/owns/subscriptionPlan';
+import { useNavigate } from 'react-router-dom';
+import { CompanySettingsContext } from '../../../../contexts/CompanySettingsContext';
+import api from '../../../../utils/api';
+import { useBrand } from '../../../../hooks/useBrand';
+import { fireGa4Event } from '../../../../utils/overall';
+import { initializePaddle, Paddle } from '@paddle/paddle-js';
+import {
+  homeUrl,
+  isCloudVersion,
+  PADDLE_SECRET_TOKEN,
+  paddleEnvironment
+} from '../../../../config';
+import { getLocalizedHomeUrl } from '../../../../utils/urlPaths';
+
+function SubscriptionPlans() {
+  const { t, i18n } = useTranslation();
+  const { company, user, patchSubscription } = useAuth();
+  const brandConfig = useBrand();
+  const subscription = company.subscription;
+  const theme = useTheme();
+  const [usersCount, setUsersCount] = useState<number>(
+    company.subscription.usersCount > 150 ? 10 : company.subscription.usersCount
+  );
+  const [period, setPeriod] = useState<'monthly' | 'annually'>('monthly');
+  const [selectedPlan, setSelectedPlan] = useState<string>('STARTER');
+  const [selectedPlanObject, setSelectedPlanObject] =
+    useState<SubscriptionPlan>();
+  const { subscriptionPlans } = useSelector((state) => state.subscriptionPlans);
+  const { setTitle } = useContext(TitleContext);
+  const { showSnackBar } = useContext(CustomSnackBarContext);
+  const [submitting, setSubmitting] = useState(false);
+  const checkoutComplete = useRef<boolean>(false);
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
+  let paddle = useRef<Paddle | null>(null);
+
+  useEffect(() => {
+    const initPaddle = async () => {
+      paddle.current = await initializePaddle({
+        token: PADDLE_SECRET_TOKEN,
+        eventCallback: function (data) {
+          if (data.name == 'checkout.completed') {
+            checkoutComplete.current = true;
+            fireGa4Event('checkout_completed');
+          } else if (
+            data.name == 'checkout.closed' &&
+            checkoutComplete.current
+          ) {
+            patchSubscription({
+              id: randomInt(),
+              usersCount,
+              monthly: period === 'monthly',
+              subscriptionPlan: selectedPlanObject,
+              activated: true
+            }).then(onSubcriptionPatchSuccess);
+          }
+        }
+      });
+      paddle.current.Environment.set(paddleEnvironment);
+    };
+    initPaddle();
+  }, [usersCount, period, selectedPlanObject?.code]);
+
+  useEffect(() => {
+    setTitle(t('plans'));
+    if (user.ownsCompany) {
+      dispatch(getSubscriptionPlans());
+      setPeriod(company.subscription.monthly ? 'monthly' : 'annually');
+    }
+  }, []);
+  useEffect(() => {
+    if (subscriptionPlans.length) {
+      setSelectedPlan(company.subscription.subscriptionPlan.code);
+    }
+  }, [subscriptionPlans]);
+
+  const buyProduct = async () => {
+    if (company.demo) {
+      showSnackBar('Create a real account to upgrade', 'error');
+      return;
+    }
+    fireGa4Event('checkout_started');
+    setSubmitting(true);
+
+    const alreadySubscribed = company.subscription.activated;
+
+    let path = selectedPlanObject.code.toLowerCase();
+    path = `${path}-${period === 'monthly' ? 'monthly' : 'yearly'}`;
+
+    try {
+      if (alreadySubscribed) {
+        const { success } = await api.patch<{ success: boolean }>(
+          'paddle/subscription',
+          {
+            planId: path,
+            quantity: usersCount
+          }
+        );
+        if (success) {
+          patchSubscription({
+            id: randomInt(),
+            usersCount,
+            monthly: period === 'monthly',
+            subscriptionPlan: selectedPlanObject,
+            activated: true
+          }).then(onSubcriptionPatchSuccess);
+        } else {
+          showSnackBar(t("The Subscription couldn't be changed"), 'error');
+        }
+      } else {
+        // New checkout session
+        const data = await api.post<{ sessionId: string }>(
+          'paddle/create-checkout-session',
+          {
+            planId: path,
+            userId: user.id,
+            quantity: usersCount
+          }
+        );
+
+        if (data.sessionId) {
+          paddle.current.Checkout.open({
+            transactionId: data.sessionId,
+            customer: {
+              email: user.email.trim().toLowerCase()
+            }
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to update subscription:', error);
+      showSnackBar(t("The Subscription couldn't be changed"), 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const periods = [
+    { name: t('monthly'), value: 'monthly' },
+    { name: t('annually'), value: 'annually' }
+  ];
+
+  useEffect(() => {
+    setSelectedPlanObject(
+      subscriptionPlans.find((plan) => plan.code == selectedPlan)
+    );
+  }, [selectedPlan, subscriptionPlans]);
+
+  const isChangingSubscription = company.subscription.activated;
+  const currentPeriodLabel = subscription.monthly
+    ? t('monthly')
+    : t('annually');
+
+  const getCost = () => {
+    const selectedPlanData = subscriptionPlans.find(
+      (plan) => plan.code == selectedPlan
+    );
+    return selectedPlanData
+      ? selectedPlanData[
+          period == 'monthly' ? 'monthlyCostPerUser' : 'yearlyCostPerUser'
+        ] * usersCount
+      : 0;
+  };
+
+  const onSubcriptionPatchSuccess = () => {
+    showSnackBar(t('subscription_change_success'), 'success');
+    navigate('/app/work-orders');
+  };
+
+  useEffect(() => {
+    fireGa4Event('pricing_view');
+  }, []);
+
+  if (user.ownsCompany)
+    return (
+      <>
+        <Helmet>
+          <title>{t('plan')}</title>
+        </Helmet>
+        <Grid
+          container
+          justifyContent="center"
+          alignItems="stretch"
+          spacing={2}
+          padding={4}
+        >
+          <Grid item xs={12}>
+            <Card
+              sx={{
+                p: 2,
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}
+            >
+              <Stack direction="row" spacing={1}>
+                <Typography variant="h6" fontWeight="bold">
+                  {t('current_plan')}
+                </Typography>
+                <Typography variant="h6">
+                  {subscription.subscriptionPlan.name}
+                </Typography>
+              </Stack>
+              <Stack direction="row" spacing={1}>
+                <PersonTwoToneIcon />
+                <Typography variant="h6">
+                  {subscription.usersCount} {t(`Users`)}
+                </Typography>
+              </Stack>
+            </Card>
+            <Grid item xs={12}>
+              <Card sx={{ p: 2, mt: 2 }}>
+                <Box>
+                  <Box>
+                    <Typography variant="h4" gutterBottom>
+                      {t('number_users_who_will_use_grash', {
+                        shortBrandName: brandConfig.shortName
+                      })}
+                    </Typography>
+                    <Typography variant="subtitle2">
+                      <Trans
+                        i18nKey={'pay_only_for_roles'}
+                        components={{ italic: <i />, bold: <strong /> }}
+                      />
+                    </Typography>
+                  </Box>
+                  <Stack
+                    direction="row"
+                    spacing={2}
+                    sx={{ my: 3 }}
+                    alignItems={'center'}
+                  >
+                    <Slider
+                      size="medium"
+                      value={usersCount}
+                      min={0}
+                      step={1}
+                      max={150}
+                      onChange={(_, value) => setUsersCount(value as number)}
+                    />
+                    <Typography
+                      sx={{
+                        p: 1,
+                        backgroundColor: theme.colors.alpha.black[5],
+                        border: 0.5,
+                        display: 'flex',
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        borderRadius: 1
+                      }}
+                      fontWeight={'bold'}
+                      variant="h6"
+                    >
+                      {t('users_count_display', { count: usersCount })}
+                    </Typography>
+                  </Stack>
+                </Box>
+                <Box>
+                  <Typography variant="h4">
+                    {t('how_will_you_be_billed')}
+                  </Typography>
+                  <RadioGroup
+                    sx={{ p: 2, my: 1 }}
+                    value={period}
+                    onChange={(event) => {
+                      setPeriod(event.target.value as 'monthly' | 'annually');
+                    }}
+                    name="period"
+                  >
+                    <Grid container>
+                      <Grid item xs={12} md={6}>
+                        <Grid container spacing={1}>
+                          {periods.map((item) => (
+                            <Grid item xs={12} md={6} key={item.value}>
+                              <FormControlLabel
+                                sx={{
+                                  border: 2,
+                                  borderColor:
+                                    item.value === period
+                                      ? theme.colors.primary.main
+                                      : theme.colors.alpha.black[30],
+                                  p: 2,
+                                  backgroundColor:
+                                    item.value === period
+                                      ? theme.colors.primary.lighter
+                                      : null
+                                }}
+                                value={item.value}
+                                control={<Radio />}
+                                label={
+                                  <Typography variant="h6" fontWeight="bold">
+                                    {item.name}
+                                  </Typography>
+                                }
+                              />
+                            </Grid>
+                          ))}
+                        </Grid>
+                      </Grid>
+                    </Grid>
+                  </RadioGroup>
+                </Box>
+                <Box>
+                  <Typography variant="h4" gutterBottom>
+                    {t('which_plan_fits_you')}
+                  </Typography>
+                  <Typography variant="h6">
+                    {t('checkout_our')}{' '}
+                    <Link
+                      target={'_blank'}
+                      href={getLocalizedHomeUrl('pricing', i18n.language)}
+                    >
+                      {t('pricing_page')}
+                    </Link>{' '}
+                    {t('for_more_details')}
+                  </Typography>
+                  <RadioGroup
+                    sx={{ p: 2, my: 1 }}
+                    value={selectedPlan}
+                    onChange={(event) => {
+                      setSelectedPlan(event.target.value);
+                    }}
+                    name="plans"
+                  >
+                    <Grid container spacing={1}>
+                      {[...subscriptionPlans]
+                        .sort(
+                          (a, b) => a.monthlyCostPerUser - b.monthlyCostPerUser
+                        )
+                        .map((plan) => (
+                          <Grid item xs={12} md={4} key={plan.id}>
+                            <FormControlLabel
+                              sx={{
+                                border: 2,
+                                borderColor:
+                                  plan.code === selectedPlan
+                                    ? theme.colors.primary.main
+                                    : theme.colors.alpha.black[30],
+                                p: 2,
+                                backgroundColor:
+                                  plan.code === selectedPlan
+                                    ? theme.colors.primary.lighter
+                                    : null
+                              }}
+                              value={plan.code}
+                              control={<Radio />}
+                              label={
+                                <Box>
+                                  <Typography variant="h6" fontWeight="bold">
+                                    {plan.name}
+                                  </Typography>
+                                  <Typography variant="subtitle1">
+                                    <b>
+                                      {period == 'monthly'
+                                        ? plan.monthlyCostPerUser
+                                        : plan.yearlyCostPerUser}{' '}
+                                      USD
+                                    </b>{' '}
+                                    {period == 'monthly'
+                                      ? t('per_user_month')
+                                      : t('per_user_year')}
+                                  </Typography>
+                                </Box>
+                              }
+                            />
+                          </Grid>
+                        ))}
+                    </Grid>
+                  </RadioGroup>
+                </Box>
+                <Box>
+                  <Typography variant="h4" gutterBottom>
+                    {t('features')}
+                  </Typography>
+                  <PlanFeatures features={selectedPlanObject?.features ?? []} />
+                </Box>
+                {isChangingSubscription && (
+                  <Box
+                    sx={{
+                      border: 1,
+                      borderColor: theme.colors.primary.main,
+                      backgroundColor: theme.colors.primary.lighter,
+                      borderRadius: 2,
+                      p: 2,
+                      my: 2
+                    }}
+                  >
+                    <Typography
+                      variant="h4"
+                      fontWeight="bold"
+                      gutterBottom
+                      sx={{ color: theme.colors.primary.dark }}
+                    >
+                      {t('subscription_change_summary')}
+                    </Typography>
+
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      my={1}
+                    >
+                      <Typography variant="body1">{t('plan')}</Typography>
+                      <Typography variant="body1" fontWeight="bold">
+                        {t('change_from_to', {
+                          current: subscription.subscriptionPlan.name,
+                          next: selectedPlanObject?.name
+                        })}
+                      </Typography>
+                    </Stack>
+
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      my={1}
+                    >
+                      <Typography variant="body1">{t('users')}</Typography>
+                      <Typography variant="body1" fontWeight="bold">
+                        {t('change_from_to', {
+                          current: subscription.usersCount,
+                          next: usersCount
+                        })}
+                      </Typography>
+                    </Stack>
+
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      my={1}
+                    >
+                      <Typography variant="body1">
+                        {t('billing_period')}
+                      </Typography>
+                      <Typography variant="body1" fontWeight="bold">
+                        {t('change_from_to', {
+                          current: currentPeriodLabel,
+                          next:
+                            period === 'monthly' ? t('monthly') : t('annually')
+                        })}
+                      </Typography>
+                    </Stack>
+
+                    <Typography
+                      variant="subtitle2"
+                      sx={{ mt: 2, fontStyle: 'italic' }}
+                    >
+                      {t('prorata_notice')}
+                    </Typography>
+                  </Box>
+                )}
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    my: 3
+                  }}
+                >
+                  {selectedPlanObject?.code !== 'BUSINESS' && (
+                    <Typography sx={{ my: 2 }} variant="h4" gutterBottom>
+                      {t('you_will_be_charged')} <b>{`$ ${getCost()}`}</b>{' '}
+                      {period == 'monthly'
+                        ? t('monthly_adverb')
+                        : t('yearly_adverb')}
+                    </Typography>
+                  )}
+                  <Button
+                    onClick={buyProduct}
+                    size="large"
+                    variant="contained"
+                    startIcon={submitting && <CircularProgress size="1rem" />}
+                    disabled={
+                      !selectedPlan || submitting || selectedPlan == 'FREE'
+                    }
+                  >
+                    {t('upgrade_now')}
+                  </Button>
+                </Box>
+              </Card>
+            </Grid>
+          </Grid>
+        </Grid>
+      </>
+    );
+  else return <PermissionErrorMessage message={'no_access_page'} />;
+}
+
+export default SubscriptionPlans;

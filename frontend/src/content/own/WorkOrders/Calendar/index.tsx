@@ -1,0 +1,380 @@
+import { useEffect, useRef, useState } from 'react';
+import frLocale from '@fullcalendar/core/locales/fr';
+import enLocale from '@fullcalendar/core/locales/en-gb';
+import FullCalendar, { LocaleSingularArg } from '@fullcalendar/react';
+import dayGridPlugin from '@fullcalendar/daygrid';
+import timeGridPlugin from '@fullcalendar/timegrid';
+import interactionPlugin from '@fullcalendar/interaction';
+import listPlugin from '@fullcalendar/list';
+import {
+  Box,
+  Card,
+  CircularProgress,
+  Divider,
+  Drawer,
+  Grid,
+  Stack,
+  styled,
+  useMediaQuery,
+  useTheme
+} from '@mui/material';
+
+import type { View } from 'src/models/calendar';
+import { useDispatch, useSelector } from 'src/store';
+import WorkOrder, { Priority } from 'src/models/owns/workOrder';
+import { CalendarEvent, getWorkOrderEvents } from 'src/slices/workOrder';
+import Actions from './Actions';
+import i18n from 'i18next';
+import PreventiveMaintenance from 'src/models/owns/preventiveMaintenance';
+import {
+  getCalendarLocale,
+  getDateLocale,
+  getSupportedLanguage,
+  supportedLanguages
+} from '../../../../i18n/i18n';
+import { Locale as DateLocale } from 'date-fns';
+import enGb from '@fullcalendar/core/locales/en-gb';
+import { useTranslation } from 'react-i18next';
+import { FilterField } from 'src/models/owns/page';
+import { loadFilterFields, saveFilterFields } from 'src/utils/filter';
+import MoreFilters from '../Filters/MoreFilters';
+import _ from 'lodash';
+
+const FullCalendarWrapper = styled(Box)(
+  ({ theme }) => `
+    padding: ${theme.spacing(3)};
+    position: relative;
+   
+    & .fc-license-message {
+      display: none;
+    }
+    .fc {
+      .fc-daygrid-day,.fc-timegrid-slot{
+        cursor: pointer;
+      }
+      .fc-col-header-cell {
+        padding: ${theme.spacing(1)};
+        background: ${theme.colors.alpha.black[5]};
+      }
+
+      .fc-scrollgrid {
+        border: 2px solid ${theme.colors.alpha.black[10]};
+        border-right-width: 1px;
+        border-bottom-width: 1px;
+      }
+
+      .fc-cell-shaded,
+      .fc-list-day-cushion {
+        background: ${theme.colors.alpha.black[5]};
+      }
+
+      .fc-list-event-graphic {
+        padding-right: ${theme.spacing(1)};
+      }
+
+      .fc-theme-standard td, .fc-theme-standard th,
+      .fc-col-header-cell {
+        border: 1px solid ${theme.colors.alpha.black[10]};
+      }
+
+      .fc-event {
+        padding: ${theme.spacing(0.1)} ${theme.spacing(0.3)};
+      }
+
+      .fc-list-day-side-text {
+        font-weight: normal;
+        color: ${theme.colors.alpha.black[70]};
+      }
+
+      .fc-list-event:hover td,
+      td.fc-daygrid-day.fc-day-today {
+        background-color: ${theme.colors.primary.lighter};
+      }
+
+      td.fc-daygrid-day:hover,
+      .fc-highlight {
+        background: ${theme.colors.alpha.black[10]};
+      }
+
+      .fc-daygrid-dot-event:hover, 
+      .fc-daygrid-dot-event.fc-event-mirror {
+        background: ${theme.colors.primary.lighter};
+      }
+
+      .fc-daygrid-day-number {
+        padding: ${theme.spacing(1)};
+        font-weight: bold;
+      }
+
+      .fc-list-sticky .fc-list-day > * {
+        background: ${theme.colors.alpha.black[5]} !important;
+      }
+
+      .fc-cell-shaded, 
+      .fc-list-day-cushion {
+        background: ${theme.colors.alpha.black[10]} !important;
+        color: ${theme.colors.alpha.black[70]} !important;
+      }
+
+      &.fc-theme-standard td, 
+      &.fc-theme-standard th,
+      &.fc-theme-standard .fc-list {
+        border-color: ${theme.colors.alpha.black[30]};
+      }
+    }
+`
+);
+
+interface Event {
+  id: string;
+  allDay: boolean;
+  color?: string;
+  description: string;
+  end: Date;
+  start: Date;
+  title: string;
+  extendedProps: { type: string };
+}
+
+interface OwnProps {
+  handleAddWorkOrder: (date: Date) => void;
+  handleOpenDetails: (id: number, type: string) => void;
+  companyId: number | null;
+  eventsRefreshTrigger?: number;
+}
+
+const FILTERS_STORAGE_KEY = 'workOrder_filters';
+const DEFAULT_FILTER_FIELDS: FilterField[] = [
+  { field: 'archived', operation: 'eq', value: false },
+  {
+    field: 'priority',
+    operation: 'in',
+    values: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+    value: '',
+    enumName: 'PRIORITY'
+  },
+  {
+    field: 'status',
+    operation: 'in',
+    values: ['OPEN', 'IN_PROGRESS', 'ON_HOLD'],
+    value: '',
+    enumName: 'STATUS'
+  }
+];
+
+const normalizeFields = (fields: FilterField[]) =>
+  [...fields]
+    .sort((a, b) => a.field.localeCompare(b.field))
+    .map((f) => ({ ...f, values: f.values ? [...f.values].sort() : f.values }));
+
+const getInitialFilterFields = (): FilterField[] =>
+  loadFilterFields(FILTERS_STORAGE_KEY, DEFAULT_FILTER_FIELDS);
+
+function ApplicationsCalendar({
+  handleAddWorkOrder,
+  handleOpenDetails,
+  companyId,
+  eventsRefreshTrigger = 0
+}: OwnProps) {
+  const theme = useTheme();
+  const { i18n } = useTranslation();
+  const calendarRef = useRef<FullCalendar | null>(null);
+  const dispatch = useDispatch();
+  const { calendar, loadingGet } = useSelector((state) => state.workOrders);
+  const [date, setDate] = useState<Date>(new Date());
+  const [view, setView] = useState<View>('timeGridWeek');
+  const [visibleRange, setVisibleRange] = useState<{ start: Date; end: Date }>({
+    start: null,
+    end: null
+  });
+  const [filterFields, setFilterFields] = useState<FilterField[]>(
+    getInitialFilterFields()
+  );
+  const [openFilterDrawer, setOpenFilterDrawer] = useState<boolean>(false);
+  const getLanguage = i18n.language;
+  const [calendarLocale, setCalendarLocale] = useState<LocaleSingularArg>(enGb);
+
+  const onFilterChange = (newFilters: FilterField[]) => {
+    setFilterFields(newFilters);
+    saveFilterFields(FILTERS_STORAGE_KEY, newFilters, new Set());
+  };
+  const handleCloseFilterDrawer = () => setOpenFilterDrawer(false);
+
+  useEffect(() => {
+    getCalendarLocale(i18n.language).then(setCalendarLocale);
+  }, [i18n.language]);
+
+  const getColor = (priority: Priority) => {
+    switch (priority) {
+      case 'HIGH':
+        return theme.colors.error.main;
+      case 'MEDIUM':
+        return theme.colors.warning.main;
+      case 'LOW':
+        return theme.colors.info.main;
+      case 'NONE':
+        return theme.colors.primary.main;
+      default:
+        break;
+    }
+  };
+  const getEventFromWO = (
+    eventPayload: CalendarEvent<WorkOrder | PreventiveMaintenance>
+  ): Event => {
+    return {
+      id: eventPayload.event.id.toString(),
+      allDay: false,
+      color:
+        'status' in eventPayload.event &&
+        eventPayload.event.status === 'COMPLETE'
+          ? theme.colors.alpha.black[30]
+          : getColor(eventPayload.event.priority),
+      description: eventPayload.event?.description,
+      end: new Date(eventPayload.endDate),
+      start: new Date(eventPayload.date),
+      title: eventPayload.event.title,
+      extendedProps: { type: eventPayload.type }
+    };
+  };
+  const handleDateToday = (): void => {
+    const calItem = calendarRef.current;
+
+    if (calItem) {
+      const calApi = calItem.getApi();
+
+      calApi.today();
+      setDate(calApi.getDate());
+    }
+  };
+  useEffect(() => {
+    if (visibleRange.start && visibleRange.end)
+      dispatch(
+        getWorkOrderEvents(
+          visibleRange.start,
+          visibleRange.end,
+          companyId,
+          filterFields
+        )
+      );
+  }, [
+    visibleRange.start,
+    visibleRange.end,
+    companyId,
+    filterFields,
+    eventsRefreshTrigger
+  ]);
+  const changeView = (changedView: View): void => {
+    const calItem = calendarRef.current;
+
+    if (calItem) {
+      const calApi = calItem.getApi();
+
+      calApi.changeView(changedView);
+      setView(changedView);
+    }
+  };
+
+  const handleDatePrev = (): void => {
+    const calItem = calendarRef.current;
+
+    if (calItem) {
+      const calApi = calItem.getApi();
+
+      calApi.prev();
+      setDate(calApi.getDate());
+    }
+  };
+
+  const handleDateNext = (): void => {
+    const calItem = calendarRef.current;
+
+    if (calItem) {
+      const calApi = calItem.getApi();
+
+      calApi.next();
+      setDate(calApi.getDate());
+    }
+  };
+
+  return (
+    <Grid item xs={12}>
+      <Actions
+        date={date}
+        onNext={handleDateNext}
+        onPrevious={handleDatePrev}
+        onToday={handleDateToday}
+        changeView={changeView}
+        view={view}
+        onFilterClick={() => setOpenFilterDrawer(true)}
+        hasActiveFilters={
+          !_.isEqual(
+            normalizeFields(filterFields),
+            normalizeFields(DEFAULT_FILTER_FIELDS)
+          )
+        }
+      />
+      <Divider />
+      <FullCalendarWrapper>
+        {loadingGet && (
+          <Stack position="absolute" top={'45%'} left={'45%'} zIndex={10}>
+            <CircularProgress size={64} />
+          </Stack>
+        )}
+        <FullCalendar
+          allDaySlot={false}
+          initialDate={date}
+          initialView={view}
+          locale={calendarLocale}
+          droppable
+          eventDisplay="block"
+          eventClick={(arg) =>
+            handleOpenDetails(
+              Number(arg.event.id),
+              arg.event.extendedProps.type
+            )
+          }
+          dateClick={(event) => handleAddWorkOrder(event.date)}
+          dayMaxEventRows={4}
+          datesSet={(arg) =>
+            setVisibleRange({ start: arg.start, end: arg.end })
+          }
+          events={calendar.events.map((eventPayload) =>
+            getEventFromWO(eventPayload)
+          )}
+          headerToolbar={false}
+          height={660}
+          ref={calendarRef}
+          rerenderDelay={10}
+          weekends
+          plugins={[
+            dayGridPlugin,
+            timeGridPlugin,
+            interactionPlugin,
+            listPlugin
+          ]}
+        />
+      </FullCalendarWrapper>
+      <Drawer
+        anchor="left"
+        open={openFilterDrawer}
+        onClose={handleCloseFilterDrawer}
+        PaperProps={{
+          sx: { width: '30%' }
+        }}
+      >
+        <MoreFilters
+          filterFields={filterFields}
+          onFilterChange={onFilterChange}
+          onClose={handleCloseFilterDrawer}
+          onReset={() => {
+            onFilterChange(DEFAULT_FILTER_FIELDS);
+            handleCloseFilterDrawer();
+          }}
+          showEnumFilters
+        />
+      </Drawer>
+    </Grid>
+  );
+}
+
+export default ApplicationsCalendar;

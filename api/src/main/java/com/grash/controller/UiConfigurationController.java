@@ -1,0 +1,49 @@
+package com.grash.controller;
+
+import com.grash.dto.UiConfigurationPatchDTO;
+import com.grash.exception.CustomException;
+import com.grash.model.UiConfiguration;
+import com.grash.model.User;
+import com.grash.model.enums.PermissionEntity;
+import com.grash.service.UiConfigurationService;
+import com.grash.service.UserService;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+
+import java.util.Optional;
+
+@RestController
+@RequestMapping("/ui-configurations")
+@Tag(name = "UI Configuration", description = "Operations on UI configuration")
+@RequiredArgsConstructor
+public class UiConfigurationController {
+
+    private final UiConfigurationService uiConfigurationService;
+    private final UserService userService;
+
+    @PatchMapping()
+    @PreAuthorize("hasRole('ROLE_CLIENT')")
+    public UiConfiguration patch(@Parameter(description = "UI configuration fields to update") @Valid @RequestBody UiConfigurationPatchDTO uiConfiguration,
+                                 HttpServletRequest req) {
+        User user = userService.whoami(req);
+        Optional<UiConfiguration> optionalUiConfiguration =
+                uiConfigurationService.findByCompanySettings(user.getCompany().getCompanySettings().getId());
+
+        if (optionalUiConfiguration.isPresent()) {
+            UiConfiguration savedUiConfiguration = optionalUiConfiguration.get();
+            if (user.getRole().getViewPermissions().contains(PermissionEntity.SETTINGS)) {
+                return uiConfigurationService.update(savedUiConfiguration.getId(), uiConfiguration);
+            } else throw new CustomException("Forbidden", HttpStatus.FORBIDDEN);
+        } else throw new CustomException("UiConfiguration not found", HttpStatus.NOT_FOUND);
+    }
+}
+
+
