@@ -3,8 +3,13 @@
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
     <changeSet author="Ibrahima" id="0113896621918">
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <columnExists tableName="general_preferences" columnName="simplified_work_order"/>
+            </not>
+        </preConditions>
         <addColumn tableName="general_preferences">
-            <column name="simplified_work_order" type="BOOLEAN" defaultValue="false">
+            <column name="simplified_work_order" type="BOOLEAN" defaultValueBoolean="false">
                 <constraints nullable="false"/>
             </column>
         </addColumn>
