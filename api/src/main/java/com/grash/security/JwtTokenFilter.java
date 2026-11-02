@@ -25,6 +25,14 @@ public class JwtTokenFilter extends OncePerRequestFilter {
     protected void doFilterInternal(@NotNull HttpServletRequest httpServletRequest,
                                     @NotNull HttpServletResponse httpServletResponse,
                                     @NotNull FilterChain filterChain) throws ServletException, IOException {
+        
+        // Skip JWT parsing and error rejection for WebSocket endpoints so handshakes never get dropped
+        String requestURI = httpServletRequest.getRequestURI();
+        if (requestURI != null && requestURI.startsWith("/ws")) {
+            filterChain.doFilter(httpServletRequest, httpServletResponse);
+            return;
+        }
+
         String token = jwtTokenProvider.resolveToken(httpServletRequest);
         try {
             if (token != null && jwtTokenProvider.validateToken(token)) {
@@ -32,7 +40,7 @@ public class JwtTokenFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext().setAuthentication(auth);
             }
         } catch (CustomException ex) {
-            //this is very important, since it guarantees the user is not authenticated at all
+            // This guarantees the user is not authenticated at all
             SecurityContextHolder.clearContext();
             httpServletResponse.sendError(ex.getHttpStatus().value(), ex.getMessage());
             return;
@@ -42,4 +50,3 @@ public class JwtTokenFilter extends OncePerRequestFilter {
     }
 
 }
-
