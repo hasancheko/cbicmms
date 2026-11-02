@@ -11,9 +11,9 @@ import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -40,8 +40,10 @@ public class WebSecurityConfig {
     private final RateLimitFilter rateLimitFilter;
     private final CustomUserDetailsService customUserDetailsService;
     private final Optional<LdapAuthenticationProvider> ldapAuthenticationProvider;
+
     @Value("${enable-sso}")
     private boolean enableSso;
+
     @Value("${ldap.enabled:false}")
     private boolean ldapEnabled;
 
@@ -51,47 +53,51 @@ public class WebSecurityConfig {
         // Disable CSRF (cross site request forgery)
         http.csrf(AbstractHttpConfigurer::disable);
 
+        // Enable CORS before authorization and custom filters
+        http.cors(Customizer.withDefaults());
+
         // No session will be created or used by spring security
         http.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
         // Entry points
         http.authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/auth/signin").permitAll()
-                        .requestMatchers("/auth/signin-ldap").permitAll()
-                        .requestMatchers("/auth/signup").permitAll()
-                        .requestMatchers("/auth/refresh").permitAll()
-                        .requestMatchers("/auth/sso/**").permitAll()
-                        .requestMatchers("/auth/sendMail").permitAll()
-                        .requestMatchers("/auth/resetpwd/**").permitAll()
-                        .requestMatchers("/auth/delete-account-confirm").permitAll()
-                        .requestMatchers("/license/state").permitAll()
-                        .requestMatchers("/oauth2/**").permitAll()
-                        .requestMatchers("/login/oauth2/**").permitAll()
-                        .requestMatchers("/health-check").permitAll()
-                        .requestMatchers("/mail/send").permitAll()
-                        .requestMatchers("/instance-config").permitAll()
-                        .requestMatchers("/subscription-plans").permitAll()
-                        .requestMatchers("/files/download/tos", "/files/download/privacy-policy").permitAll()
-                        .requestMatchers("/ws/**").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/newsLetters").permitAll()
-                        .requestMatchers("/auth/activate-account**").permitAll()
-                        .requestMatchers("/demo/generate-account").permitAll()
-                        .requestMatchers("/webhooks/**").permitAll()
-                        .requestMatchers("/paddle/create-checkout-session").permitAll()
-                        .requestMatchers("/auth/reset-pwd-confirm**").permitAll()
-                        //request-portal
-                        .requestMatchers("/request-portals/public/{uuid}").permitAll()
-                        .requestMatchers("/requests/portal/{requestPortalUuid}").permitAll()
-                        .requestMatchers("/files/upload/request-portal/{uuid}").permitAll()
-                        .requestMatchers("/assets/public/mini/{uuid}").permitAll()
-                        .requestMatchers("/locations/public/mini/{uuid}").permitAll()
-//                .requestMatchers("/h2-console/**").permitAll()
-                        .requestMatchers("/swagger-ui/**").permitAll()
-                        .requestMatchers("/swagger-ui.html").permitAll()
-                        .requestMatchers("/api-docs.html").permitAll()
-                        .requestMatchers("/v3/api-docs/**").permitAll()
-                        // Disallow everything else..
-                        .anyRequest().authenticated()
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                .requestMatchers("/auth/signin").permitAll()
+                .requestMatchers("/auth/signin-ldap").permitAll()
+                .requestMatchers("/auth/signup").permitAll()
+                .requestMatchers("/auth/refresh").permitAll()
+                .requestMatchers("/auth/sso/**").permitAll()
+                .requestMatchers("/auth/sendMail").permitAll()
+                .requestMatchers("/auth/resetpwd/**").permitAll()
+                .requestMatchers("/auth/delete-account-confirm").permitAll()
+                .requestMatchers("/license/state").permitAll()
+                .requestMatchers("/oauth2/**").permitAll()
+                .requestMatchers("/login/oauth2/**").permitAll()
+                .requestMatchers("/health-check").permitAll()
+                .requestMatchers("/mail/send").permitAll()
+                .requestMatchers("/instance-config").permitAll()
+                .requestMatchers("/subscription-plans").permitAll()
+                .requestMatchers("/files/download/tos", "/files/download/privacy-policy").permitAll()
+                .requestMatchers("/ws/**").permitAll()
+                .requestMatchers("/images/**").permitAll()
+                .requestMatchers(HttpMethod.POST, "/newsLetters").permitAll()
+                .requestMatchers("/auth/activate-account**").permitAll()
+                .requestMatchers("/demo/generate-account").permitAll()
+                .requestMatchers("/webhooks/**").permitAll()
+                .requestMatchers("/paddle/create-checkout-session").permitAll()
+                .requestMatchers("/auth/reset-pwd-confirm**").permitAll()
+                // request-portal
+                .requestMatchers("/request-portals/public/{uuid}").permitAll()
+                .requestMatchers("/requests/portal/{requestPortalUuid}").permitAll()
+                .requestMatchers("/files/upload/request-portal/{uuid}").permitAll()
+                .requestMatchers("/assets/public/mini/{uuid}").permitAll()
+                .requestMatchers("/locations/public/mini/{uuid}").permitAll()
+                .requestMatchers("/swagger-ui/**").permitAll()
+                .requestMatchers("/swagger-ui.html").permitAll()
+                .requestMatchers("/api-docs.html").permitAll()
+                .requestMatchers("/v3/api-docs/**").permitAll()
+                // Disallow everything else..
+                .anyRequest().authenticated()
         );
 
         // OAuth2 Configuration
@@ -104,7 +110,7 @@ public class WebSecurityConfig {
             );
         }
 
-        // If a user try to access a resource without having enough permissions
+        // If a user tries to access a resource without having enough permissions
         http.exceptionHandling(exception -> exception
                 .authenticationEntryPoint((request, response, authException) ->
                         response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized"))
@@ -116,13 +122,11 @@ public class WebSecurityConfig {
         http.addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class);
         http.addFilterBefore(rateLimitFilter, UsernamePasswordAuthenticationFilter.class);
 
+        // Allow sameOrigin frames for SockJS fallback transports
         http.headers(headers -> headers
-                .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
+                .frameOptions(HeadersConfigurer.FrameOptionsConfig::sameOrigin)
                 .contentTypeOptions(Customizer.withDefaults())
         );
-
-        http.cors(cors -> {
-        }); // Using lambda for cors configuration
 
         return http.build();
     }
@@ -130,11 +134,7 @@ public class WebSecurityConfig {
     @Bean
     public WebSecurityCustomizer webSecurityCustomizer() {
         return (web) -> web.ignoring()
-                .requestMatchers("/com/grash/configuration/**")//
-                .requestMatchers("/images/**")
-                // Un-secure H2 Database (for testing purposes, H2 console shouldn\'t be unprotected in production)
-//                .requestMatchers("/h2-console/**")
-                ;
+                .requestMatchers("/com/grash/configuration/**");
     }
 
     @Bean
@@ -154,5 +154,4 @@ public class WebSecurityConfig {
             return new ProviderManager(daoProvider);
         }
     }
-
 }
