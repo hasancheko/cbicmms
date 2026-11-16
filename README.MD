@@ -1,4 +1,4 @@
-<p align="center"><img src="frontend/public/static/images/logo/logo.png" width="80"></p>
+<p align="center"><img src="frontend/public/static/images/logo/logoff.png" width="80"></p>
 <h1 align="center">Atlas CMMS</h1>
 
 [Atlas CMMS](https://github.com/grashjs/cmms) is a powerful, self-hosted maintenance management system designed for both
