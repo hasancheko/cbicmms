@@ -45,6 +45,9 @@ public class WorkOrderMeterTrigger extends WorkOrderBase {
     @Schema(description = "Trigger value threshold", requiredMode = Schema.RequiredMode.REQUIRED)
     private int value;
 
+    @Schema(description = "Baseline meter reading from the last triggered work order", accessMode = Schema.AccessMode.READ_ONLY)
+    private Double lastTriggeredValue;
+
     @NotNull
     @Schema(description = "Wait time before triggering", requiredMode = Schema.RequiredMode.REQUIRED)
     private int waitBefore;
@@ -61,6 +64,3 @@ public class WorkOrderMeterTrigger extends WorkOrderBase {
     private List<CustomFieldValue> customFieldValues = new ArrayList<>();
 
 }
-
-
-
