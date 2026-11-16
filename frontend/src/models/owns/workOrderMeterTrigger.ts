@@ -3,7 +3,8 @@ import { WorkOrderBase } from './workOrderBase';
 export default interface WorkOrderMeterTrigger extends WorkOrderBase {
   recurrent: boolean;
   name: string;
-  triggerCondition: 'LESS_THAN' | 'MORE_THAN';
+  triggerCondition: 'LESS_THAN' | 'MORE_THAN' | 'EVERY';
   value: number;
+  lastTriggeredValue?: number;
   waitBefore: number;
 }
