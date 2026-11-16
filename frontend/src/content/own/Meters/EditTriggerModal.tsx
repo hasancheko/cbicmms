@@ -53,8 +53,9 @@ export default function EditTriggerModal({
       type: 'select',
       label: t('when_reading_is'),
       items: [
-        { label: 'Greater than', value: 'MORE_THAN' },
-        { label: 'Lower than', value: 'LESS_THAN' }
+        { label: t('greater_than'), value: 'MORE_THAN' },
+        { label: t('lower_than'), value: 'LESS_THAN' },
+        { label: t('every', { defaultValue: 'Every (Cumulative Delta)' }), value: 'EVERY' }
       ],
       midWidth: true,
       required: true
@@ -130,7 +131,12 @@ export default function EditTriggerModal({
           values={{
             ...workOrderMeterTrigger,
             triggerCondition: {
-              label: t(workOrderMeterTrigger?.triggerCondition),
+              label:
+                workOrderMeterTrigger?.triggerCondition === 'MORE_THAN'
+                  ? t('greater_than')
+                  : workOrderMeterTrigger?.triggerCondition === 'EVERY'
+                  ? t('every', { defaultValue: 'Every (Cumulative Delta)' })
+                  : t('lower_than'),
               value: workOrderMeterTrigger?.triggerCondition
             },
             ...getWOBaseValues(t, workOrderMeterTrigger)
