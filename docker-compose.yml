@@ -18,9 +18,7 @@ services:
       retries: 5
 
   api:
-    build:
-      context: ./api
-      dockerfile: Dockerfile
+    image: ghcr.io/hasancheko/atlas-cmms-backend:latest
     container_name: atlas-cmms-backend
     depends_on:
       postgres:
@@ -102,63 +100,6 @@ services:
       - "8080"
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: ghcr.io/hasancheko/atlas-cmms-frontend:latest
     container_name: atlas-cmms-frontend
-    environment:
-      API_URL: /api
-      GOOGLE_KEY: ${GOOGLE_KEY:- }
-      GOOGLE_TRACKING_ID: ${GOOGLE_TRACKING_ID:- }
-      INVITATION_VIA_EMAIL: ${INVITATION_VIA_EMAIL:-false}
-      CLOUD_VERSION: ${CLOUD_VERSION:-false}
-      NODE_ENV: production
-      ENABLE_SSO: ${ENABLE_SSO:-false}
-      OAUTH2_PROVIDER: ${OAUTH2_PROVIDER:- }
-      LOGO_PATHS: ${LOGO_PATHS:- }
-      CUSTOM_COLORS: ${CUSTOM_COLORS:- }
-      BRAND_CONFIG: ${BRAND_CONFIG:- }
-      DEMO_LINK: ${DEMO_LINK:- }
-      HOME_URL: ${HOME_URL:-https://atlas-cmms.com}
-      PADDLE_SECRET_TOKEN: ${PADDLE_SECRET_TOKEN:- }
-      PADDLE_ENVIRONMENT: ${PADDLE_ENVIRONMENT:-sandbox}
-      RECAPTCHA_SITE_KEY: ${RECAPTCHA_SITE_KEY:- }
-      LDAP_ENABLED: ${LDAP_ENABLED:-false}
-      SENTRY_DSN: ${SENTRY_DSN:- }
-      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:- }
-      SENTRY_RELEASE: ${SENTRY_RELEASE:- }
-      CLARITY_ID: ${CLARITY_ID:- }
-    expose:
-      - "3000"
-    depends_on:
-      - api
-
-  minio:
-    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z
-    container_name: atlas_minio
-    user: "0:0"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
-    volumes:
-      - minio_data:/data
-    expose:
-      - "9000"
-      - "9001"
-    command: server --address ":9000" --console-address ":9001" /data
-
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: atlas_nginx
-    depends_on:
-      - frontend
-      - api
-      - minio
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    ports:
-      - "3000:80"
-
-volumes:
-  postgres_data:
-  minio_data:
+    environment
