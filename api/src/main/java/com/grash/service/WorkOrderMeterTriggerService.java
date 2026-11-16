@@ -79,12 +79,16 @@ public class WorkOrderMeterTriggerService {
         } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
     }
 
+    public WorkOrderMeterTrigger save(WorkOrderMeterTrigger workOrderMeterTrigger) {
+        return workOrderMeterTriggerRepository.save(workOrderMeterTrigger);
+    }
+
     private double getLatestMeterReadingValue(Meter meter) {
         if (meter == null || meter.getReadings() == null || meter.getReadings().isEmpty()) {
             return 0.0;
         }
         return meter.getReadings().stream()
-                .max(Comparator.comparing(Reading::getDate).thenComparing(Reading::getId))
+                .max(Comparator.comparing(Reading::getCreatedAt).thenComparing(Reading::getId))
                 .map(Reading::getValue)
                 .orElse(0.0);
     }
