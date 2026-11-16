@@ -8,6 +8,7 @@ import com.grash.exception.CustomException;
 import com.grash.mapper.WorkOrderMeterTriggerMapper;
 import com.grash.model.*;
 import com.grash.model.enums.CustomFieldEntityType;
+import com.grash.model.enums.WorkOrderMeterTriggerCondition;
 
 import com.grash.repository.WorkOrderMeterTriggerRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import jakarta.persistence.EntityManager;
 
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -47,6 +49,12 @@ public class WorkOrderMeterTriggerService {
         WorkOrderMeterTrigger savedWorkOrderMeterTrigger =
                 workOrderMeterTriggerRepository.saveAndFlush(workOrderMeterTrigger);
         em.refresh(savedWorkOrderMeterTrigger);
+
+        if (savedWorkOrderMeterTrigger.getTriggerCondition() == WorkOrderMeterTriggerCondition.EVERY) {
+            savedWorkOrderMeterTrigger.setLastTriggeredValue(getLatestMeterReadingValue(savedWorkOrderMeterTrigger.getMeter()));
+            savedWorkOrderMeterTrigger = workOrderMeterTriggerRepository.saveAndFlush(savedWorkOrderMeterTrigger);
+        }
+
         return savedWorkOrderMeterTrigger;
     }
 
@@ -54,12 +62,31 @@ public class WorkOrderMeterTriggerService {
     public WorkOrderMeterTrigger update(Long id, WorkOrderMeterTriggerPatchDTO workOrderMeterTrigger, Company company) {
         if (workOrderMeterTriggerRepository.existsById(id)) {
             WorkOrderMeterTrigger savedWorkOrderMeterTrigger = workOrderMeterTriggerRepository.findById(id).get();
+            WorkOrderMeterTriggerCondition previousCondition = savedWorkOrderMeterTrigger.getTriggerCondition();
+
             if (!workOrderMeterTrigger.getCustomFields().isEmpty()) {
                 setMeterTriggerCustomFields(savedWorkOrderMeterTrigger, workOrderMeterTrigger.getCustomFields(),
                         company);
             }
-            return workOrderMeterTriggerRepository.save(workOrderMeterTriggerMapper.updateWorkOrderMeterTrigger(savedWorkOrderMeterTrigger, workOrderMeterTrigger));
+            WorkOrderMeterTrigger updated = workOrderMeterTriggerMapper.updateWorkOrderMeterTrigger(savedWorkOrderMeterTrigger, workOrderMeterTrigger);
+
+            if (updated.getTriggerCondition() == WorkOrderMeterTriggerCondition.EVERY
+                    && (previousCondition != WorkOrderMeterTriggerCondition.EVERY || updated.getLastTriggeredValue() == null)) {
+                updated.setLastTriggeredValue(getLatestMeterReadingValue(updated.getMeter()));
+            }
+
+            return workOrderMeterTriggerRepository.save(updated);
         } else throw new CustomException("Not found", HttpStatus.NOT_FOUND);
+    }
+
+    private double getLatestMeterReadingValue(Meter meter) {
+        if (meter == null || meter.getReadings() == null || meter.getReadings().isEmpty()) {
+            return 0.0;
+        }
+        return meter.getReadings().stream()
+                .max(Comparator.comparing(Reading::getDate).thenComparing(Reading::getId))
+                .map(Reading::getValue)
+                .orElse(0.0);
     }
 
     private void setMeterTriggerCustomFields(WorkOrderMeterTrigger workOrderMeterTrigger,
@@ -91,4 +118,3 @@ public class WorkOrderMeterTriggerService {
         return workOrderMeterTriggerRepository.findByMeter_Id(id);
     }
 }
-
