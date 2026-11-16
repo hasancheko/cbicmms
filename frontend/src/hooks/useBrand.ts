@@ -29,7 +29,7 @@ export function useBrand(): BrandConfig {
     name: 'CBI CMMS',
     shortName: 'CBI',
     website: 'https://www.fmcbi.com',
-    mail: 'support@fmcbi.com',
+    mail: 'tesla.tech.iq@gmail.com',
     phone: '',
     addressStreet: '',
     addressCity: 'Baghdad, Iraq'
