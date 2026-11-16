@@ -1,20 +1,30 @@
 import {
-  apiUrl,
   BrandRawConfig,
   brandRawConfig,
   customLogoPaths
 } from '../config';
-import { useSelector } from '../store';
 import { useLicenseEntitlement } from './useLicenseEntitlement';
 
 const DEFAULT_WHITE_LOGO = '/static/images/logo/logo-white.png';
 const DEFAULT_DARK_LOGO = '/static/images/logo/logo.png';
-const CUSTOM_DARK_LOGO = `${apiUrl}images/custom-logo.png`;
-const CUSTOM_WHITE_LOGO = `${apiUrl}images/custom-logo-white.png`;
 
 interface BrandConfig extends BrandRawConfig {
   logo: { white: string; dark: string };
 }
+
+function parseLogoPaths(raw: unknown): { white?: string; dark?: string } | null {
+  if (!raw || raw === 'none' || raw === 'false') return null;
+  if (typeof raw === 'object') return raw as { white?: string; dark?: string };
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export function useBrand(): BrandConfig {
   const defaultBrand: Omit<BrandConfig, 'logo'> = {
     name: 'Atlas CMMS',
@@ -26,22 +36,12 @@ export function useBrand(): BrandConfig {
     addressCity: 'Casablanca-Morocco 20040'
   };
   const isLicenseValid = useLicenseEntitlement('BRANDING');
+  const parsedLogos = parseLogoPaths(customLogoPaths);
+
   return {
     logo: {
-      white: customLogoPaths
-        ? isLicenseValid == null
-          ? null
-          : isLicenseValid
-          ? CUSTOM_WHITE_LOGO
-          : DEFAULT_WHITE_LOGO
-        : DEFAULT_WHITE_LOGO,
-      dark: customLogoPaths
-        ? isLicenseValid == null
-          ? null
-          : isLicenseValid
-          ? CUSTOM_DARK_LOGO
-          : DEFAULT_DARK_LOGO
-        : DEFAULT_DARK_LOGO
+      white: parsedLogos?.white || DEFAULT_WHITE_LOGO,
+      dark: parsedLogos?.dark || DEFAULT_DARK_LOGO
     },
     ...(isLicenseValid && brandRawConfig ? brandRawConfig : defaultBrand)
   };
