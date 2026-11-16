@@ -7,6 +7,24 @@ const getRuntimeValue = (
   return envValue || runtimeValue || defaultValue;
 };
 
+const parseJsonRuntimeValue = <T>(key: string): T | null => {
+  const raw = getRuntimeValue(key);
+  if (!raw || raw === 'none' || raw === 'false') return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Object.keys(parsed).length === 0
+    ) {
+      return null;
+    }
+    return parsed as T;
+  } catch {
+    return null;
+  }
+};
+
 export const googleMapsConfig = {
   apiKey: getRuntimeValue('GOOGLE_KEY')
 };
@@ -43,10 +61,11 @@ export const IS_LOCALHOST =
 
 export const isSSOEnabled = getRuntimeValue('ENABLE_SSO') === 'true';
 
-export const customLogoPaths: { white?: string; dark: string } =
-  getRuntimeValue('LOGO_PATHS')
-    ? JSON.parse(getRuntimeValue('LOGO_PATHS'))
-    : null;
+export const customLogoPaths = parseJsonRuntimeValue<{
+  white?: string;
+  dark: string;
+}>('LOGO_PATHS');
+
 type ThemeColors = {
   primary: string;
   secondary: string;
@@ -59,9 +78,7 @@ type ThemeColors = {
   primaryAlt: string;
 };
 
-export const customColors: ThemeColors = getRuntimeValue('CUSTOM_COLORS')
-  ? JSON.parse(getRuntimeValue('CUSTOM_COLORS'))
-  : null;
+export const customColors = parseJsonRuntimeValue<ThemeColors>('CUSTOM_COLORS');
 
 export interface BrandRawConfig {
   name: string;
@@ -72,9 +89,8 @@ export interface BrandRawConfig {
   phone: string;
   addressCity: string;
 }
-export const brandRawConfig: BrandRawConfig = getRuntimeValue('BRAND_CONFIG')
-  ? JSON.parse(getRuntimeValue('BRAND_CONFIG'))
-  : null;
+export const brandRawConfig =
+  parseJsonRuntimeValue<BrandRawConfig>('BRAND_CONFIG');
 
 export const demoLink: string = getRuntimeValue('DEMO_LINK');
 
