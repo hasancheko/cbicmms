@@ -162,10 +162,24 @@ public class ReadingService {
                     message.append(messageSource.getMessage("notification_reading_less_than", notificationArgs,
                             locale));
                 }
-            } else if (readingValue > meterTrigger.getValue()) {
-                error = true;
-                message.append(messageSource.getMessage("notification_reading_more_than", notificationArgs,
-                        locale));
+            } else if (meterTrigger.getTriggerCondition().equals(WorkOrderMeterTriggerCondition.MORE_THAN)) {
+                if (readingValue > meterTrigger.getValue()) {
+                    error = true;
+                    message.append(messageSource.getMessage("notification_reading_more_than", notificationArgs,
+                            locale));
+                }
+            } else if (meterTrigger.getTriggerCondition().equals(WorkOrderMeterTriggerCondition.EVERY)) {
+                double baseline = meterTrigger.getLastTriggeredValue() != null
+                        ? meterTrigger.getLastTriggeredValue()
+                        : 0.0;
+                if ((readingValue - baseline) >= meterTrigger.getValue()) {
+                    error = true;
+                    Object[] everyArgs = new Object[]{meter.getName(), baseline + meterTrigger.getValue(), meter.getUnit()};
+                    message.append(messageSource.getMessage("notification_reading_more_than", everyArgs,
+                            locale));
+                    meterTrigger.setLastTriggeredValue(readingValue);
+                    workOrderMeterTriggerService.save(meterTrigger);
+                }
             }
             if (error) {
                 notificationService.createMultiple(meter.getUsers().stream().map(user1 ->
