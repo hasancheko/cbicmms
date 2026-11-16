@@ -3,7 +3,6 @@ import {
   brandRawConfig,
   customLogoPaths
 } from '../config';
-import { useLicenseEntitlement } from './useLicenseEntitlement';
 
 const DEFAULT_WHITE_LOGO = '/static/images/logo/logo-white.png';
 const DEFAULT_DARK_LOGO = '/static/images/logo/logo.png';
@@ -27,15 +26,14 @@ function parseLogoPaths(raw: unknown): { white?: string; dark?: string } | null 
 
 export function useBrand(): BrandConfig {
   const defaultBrand: Omit<BrandConfig, 'logo'> = {
-    name: 'Atlas CMMS',
-    shortName: 'Atlas',
-    website: 'https://www.atlas-cmms.com',
-    mail: 'contact@atlas-cmms.com',
-    phone: '+212 6 30 69 00 50',
-    addressStreet: '410, Boulevard Zerktouni, Hamad, №1',
-    addressCity: 'Casablanca-Morocco 20040'
+    name: 'CBI CMMS',
+    shortName: 'CBI',
+    website: 'https://www.fmcbi.com',
+    mail: 'support@fmcbi.com',
+    phone: '',
+    addressStreet: '',
+    addressCity: 'Baghdad, Iraq'
   };
-  const isLicenseValid = useLicenseEntitlement('BRANDING');
   const parsedLogos = parseLogoPaths(customLogoPaths);
 
   return {
@@ -43,6 +41,7 @@ export function useBrand(): BrandConfig {
       white: parsedLogos?.white || DEFAULT_WHITE_LOGO,
       dark: parsedLogos?.dark || DEFAULT_DARK_LOGO
     },
-    ...(isLicenseValid && brandRawConfig ? brandRawConfig : defaultBrand)
+    ...defaultBrand,
+    ...(brandRawConfig || {})
   };
 }
