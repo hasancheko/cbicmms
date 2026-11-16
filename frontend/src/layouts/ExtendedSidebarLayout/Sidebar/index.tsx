@@ -5,13 +5,10 @@ import { SidebarContext } from 'src/contexts/SidebarContext';
 import {
   alpha,
   Box,
-  Button,
   darken,
   Divider,
   Drawer,
   lighten,
-  Link,
-  Stack,
   styled,
   Typography,
   useTheme
@@ -19,9 +16,7 @@ import {
 import SidebarMenu from './SidebarMenu';
 import SidebarFooter from './SidebarFooter';
 import Logo from 'src/components/LogoSign';
-import { isCloudVersion, isWhiteLabeled } from '../../../config';
-import useAuth from '../../../hooks/useAuth';
-import dayjs from 'dayjs';
+import { useBrand } from '../../../hooks/useBrand';
 
 const SidebarWrapper = styled(Box)(
   ({ theme }) => `
@@ -39,6 +34,32 @@ function Sidebar() {
   const { sidebarToggle, toggleSidebar } = useContext(SidebarContext);
   const closeSidebar = () => toggleSidebar();
   const theme = useTheme();
+  const { name: brandName, website: brandWebsite } = useBrand();
+
+  const renderBrandHeader = () => (
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 0.5
+      }}
+    >
+      <Logo white />
+      <Typography
+        sx={{ cursor: 'pointer', color: 'white', textAlign: 'center' }}
+        fontSize={13}
+        fontWeight={600}
+        onClick={() => {
+          if (brandWebsite) {
+            window.open(brandWebsite, '_blank');
+          }
+        }}
+      >
+        {brandName}
+      </Typography>
+    </Box>
+  );
 
   return (
     <>
@@ -68,20 +89,7 @@ function Sidebar() {
                 flexDirection: 'row'
               }}
             >
-              <Box>
-                <Logo white />
-                {!isWhiteLabeled && (
-                  <Typography
-                    style={{ cursor: 'pointer', color: 'white' }}
-                    fontSize={13}
-                    onClick={() => {
-                      window.open('https://www.intel-loop.com/', '_blank');
-                    }}
-                  >
-                    Powered by Intelloop
-                  </Typography>
-                )}
-              </Box>
+              {renderBrandHeader()}
             </Box>
           </Box>
           <Divider
@@ -127,20 +135,7 @@ function Sidebar() {
                   flexDirection: 'row'
                 }}
               >
-                <Box>
-                  <Logo white />
-                  {!isWhiteLabeled && (
-                    <Typography
-                      style={{ cursor: 'pointer', color: 'white' }}
-                      fontSize={13}
-                      onClick={() => {
-                        window.open('https://www.intel-loop.com/', '_blank');
-                      }}
-                    >
-                      Powered by Intelloop
-                    </Typography>
-                  )}
-                </Box>
+                {renderBrandHeader()}
               </Box>
             </Box>
             <Divider
