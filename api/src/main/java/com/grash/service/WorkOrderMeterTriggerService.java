@@ -9,14 +9,13 @@ import com.grash.mapper.WorkOrderMeterTriggerMapper;
 import com.grash.model.*;
 import com.grash.model.enums.CustomFieldEntityType;
 import com.grash.model.enums.WorkOrderMeterTriggerCondition;
-
+import com.grash.repository.ReadingRepository;
 import com.grash.repository.WorkOrderMeterTriggerRepository;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import jakarta.persistence.EntityManager;
 
 import java.util.Collection;
 import java.util.Comparator;
@@ -27,6 +26,7 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class WorkOrderMeterTriggerService {
     private final WorkOrderMeterTriggerRepository workOrderMeterTriggerRepository;
+    private final ReadingRepository readingRepository;
     private final WorkOrderService workOrderService;
     private final WorkOrderMeterTriggerMapper workOrderMeterTriggerMapper;
     private final MeterService meterService;
@@ -84,10 +84,14 @@ public class WorkOrderMeterTriggerService {
     }
 
     private double getLatestMeterReadingValue(Meter meter) {
-        if (meter == null || meter.getReadings() == null || meter.getReadings().isEmpty()) {
+        if (meter == null || meter.getId() == null) {
             return 0.0;
         }
-        return meter.getReadings().stream()
+        Collection<Reading> readings = readingRepository.findByMeter_Id(meter.getId());
+        if (readings == null || readings.isEmpty()) {
+            return 0.0;
+        }
+        return readings.stream()
                 .max(Comparator.comparing(Reading::getCreatedAt).thenComparing(Reading::getId))
                 .map(Reading::getValue)
                 .orElse(0.0);
