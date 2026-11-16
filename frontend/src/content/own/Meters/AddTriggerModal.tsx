@@ -52,7 +52,8 @@ export default function AddTriggerModal({
       label: t('when_reading_is'),
       items: [
         { label: t('greater_than'), value: 'MORE_THAN' },
-        { label: t('lower_than'), value: 'LESS_THAN' }
+        { label: t('lower_than'), value: 'LESS_THAN' },
+        { label: t('every', { defaultValue: 'Every (Cumulative Delta)' }), value: 'EVERY' }
       ],
       midWidth: true,
       required: true
